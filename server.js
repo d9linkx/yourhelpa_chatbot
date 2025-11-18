@@ -1,10 +1,7 @@
 // --- REQUIRED MODULES ---
 const express = require('express');
 const bodyParser = require('body-parser');
-const axios = require('axios'); // Used to make API calls to Meta
-const { initializeApp } = require('firebase/app');
-const { getAuth, signInWithCustomToken, signInAnonymously } = require('firebase/auth');
-const { getFirestore, doc, getDoc, setDoc } = require('firebase/firestore');
+const axios = require('axios'); // Used to make API calls to Meta and Apps Script
 
 const app = express();
 
@@ -21,117 +18,81 @@ const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || ""; 
 const GEMINI_MODEL = 'gemini-2.5-flash-preview-09-2025';
 
-// Global Firebase variables provided by the Canvas environment
-// --- FIX FOR FIREBASE CONFIG ERROR (ensuring robust access) ---
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-let firebaseConfig = null;
-let initialAuthToken = null;
+// --- GOOGLE APPS SCRIPT CONFIGURATION ---
+// IMPORTANT: This is the URL you get after deploying the Code.gs script as a Web App.
+const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycby8gGXRYTiRjWcPZbu0gcTEb0KPoskQlPKbEnphtvPysZYcnyX4_KcGcXJy6g0h2ndM_g/exec'; 
 
-if (typeof __firebase_config !== 'undefined' && __firebase_config) {
-    try {
-        firebaseConfig = JSON.parse(__firebase_config);
-    } catch (e) {
-        console.error("Error parsing __firebase_config:", e);
-    }
-}
-if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-    initialAuthToken = __initial_auth_token;
-}
-// --- END OF FIX ---
-
-
+// --- ENVIRONMENT VARIABLE CHECKS ---
 if (!VERIFY_TOKEN || !ACCESS_TOKEN || !PHONE_NUMBER_ID) {
     console.error("CRITICAL ERROR: WhatsApp environment variables are missing.");
     process.exit(1); 
 }
-if (!firebaseConfig) {
-    console.error("CRITICAL ERROR: Firebase configuration (__firebase_config) is missing. The app cannot start without it.");
-    process.exit(1); // Exit if the configuration is missing
-}
-
-// Global Firebase instances (initialized later)
-let db;
-let auth;
+// Note: APPS_SCRIPT_URL is now hardcoded, so no environment variable check is needed here.
 
 // =========================================================================
-// FIREBASE & USER STATE MANAGEMENT (Firestore acts as Google Sheets)
+// GOOGLE APPS SCRIPT & USER STATE MANAGEMENT 
+// (Node.js Server now acts as a client to the Apps Script API)
 // =========================================================================
 
 /**
- * Initializes Firebase, authenticates, and returns the current user ID.
- * @returns {string} The current user's UID or a generated ID.
- */
-async function initializeFirebase() {
-    try {
-        if (!db) {
-            const firebaseApp = initializeApp(firebaseConfig);
-            db = getFirestore(firebaseApp);
-            auth = getAuth(firebaseApp);
-            
-            // Authenticate using the provided token or anonymously
-            if (initialAuthToken) {
-                await signInWithCustomToken(auth, initialAuthToken);
-            } else {
-                await signInAnonymously(auth);
-            }
-        }
-        return auth.currentUser?.uid || crypto.randomUUID();
-
-    } catch (e) {
-        console.error("Firebase initialization or authentication failed:", e);
-        return null;
-    }
-}
-
-/**
- * Gets the user's current state from Firestore or creates a new profile.
+ * Gets the user's current state from Google Sheets by making a POST request
+ * to the deployed Google Apps Script Web App.
  * @param {string} phone The user's WhatsApp ID.
- * @returns {Promise<object>} The user document.
+ * @returns {Promise<object>} The user document retrieved from the sheet.
  */
 async function getUserState(phone) {
-    const userId = auth.currentUser.uid;
-    // Data stored privately under the current authenticated user's ID
-    const userDocRef = doc(db, `/artifacts/${appId}/users/${userId}/users`, phone);
-    
     try {
-        const docSnap = await getDoc(userDocRef);
-
-        if (docSnap.exists()) {
-            return docSnap.data();
+        const response = await axios.post(APPS_SCRIPT_URL, {
+            action: 'GET_STATE',
+            phone: phone
+        });
+        
+        // The Apps Script should return a JSON object with { success: true, user: {...} }
+        if (response.data.success && response.data.user) {
+            return response.data.user;
         } else {
-            // New User Onboarding (Section 1.2)
-            const newUser = {
-                user_id: `USER-${Date.now()}`,
-                phone: phone,
-                role: 'unassigned', // hire, helpa, seller
-                name: '',
-                city: '',
-                created_at: new Date().toISOString(),
-                status: 'NEW', // NEW -> ONBOARDING_ROLE_ASKED -> MAIN_MENU
-                current_flow: 'onboarding',
-            };
-            await setDoc(userDocRef, newUser);
-            return newUser;
+             // Handle case where script ran but returned an error response body
+            console.error("Apps Script GET_STATE failed:", response.data.error || "Unknown response structure");
+            throw new Error("Apps Script returned an unsuccessful response.");
         }
+
     } catch (e) {
-        console.error("Error accessing user state in Firestore:", e);
-        // Return a safe, basic object to prevent crashes
-        return { status: 'ERROR', phone: phone, role: 'unassigned' };
+        console.error("Error communicating with Apps Script (GET_STATE):", e.response?.data || e.message);
+        // Return a default/error state object to prevent crashes in the main flow
+        return { 
+            phone: phone, 
+            user_id: `ERROR-${Date.now()}`,
+            role: 'unassigned', 
+            name: '',
+            city: '',
+            created_at: new Date().toISOString(),
+            status: 'NEW', // Default to NEW to restart onboarding if a crash happens
+            current_flow: 'onboarding',
+            row_index: 0 
+        };
     }
 }
 
 /**
- * Saves or updates the user profile in Firestore.
- * @param {object} user The user object to save.
+ * Saves or updates the user profile in Google Sheets by making a POST request
+ * to the deployed Google Apps Script Web App.
+ * @param {object} user The user object to save. Must contain row_index (set by Apps Script).
  */
 async function saveUser(user) {
-    const userId = auth.currentUser.uid;
-    const userDocRef = doc(db, `/artifacts/${appId}/users/${userId}/users`, user.phone);
     try {
-        await setDoc(userDocRef, user, { merge: true });
-        console.log(`User ${user.phone} state updated to ${user.status}`);
+        const response = await axios.post(APPS_SCRIPT_URL, {
+            action: 'SAVE_STATE',
+            user: user
+        });
+        
+        if (response.data.success) {
+            console.log(`User ${user.phone} state updated via Apps Script.`);
+        } else {
+            console.error("Apps Script SAVE_STATE failed:", response.data.error || "Unknown response structure");
+        }
+        
     } catch (e) {
-        console.error("Error saving user state:", e);
+        console.error("Error communicating with Apps Script (SAVE_STATE):", e.response?.data || e.message);
     }
 }
 
@@ -258,136 +219,137 @@ async function sendMessage(to, text) {
  * Main function to handle the user's message and determine the next step.
  */
 async function handleMessageFlow(senderId, senderName, incomingText) {
-    const authId = await initializeFirebase();
-    if (!authId) {
-        return sendMessage(senderId, "System Error: Cannot connect to the database. Please contact support.");
+    try {
+        // State is now managed by the Apps Script API call
+        let user = await getUserState(senderId);
+
+        let replyText = '';
+
+        // --- NEW USER ONBOARDING (Section 1.1) ---
+        if (user.status === 'NEW' || user.status === 'unassigned' || user.status === 'ERROR') {
+            const onboardingPrompt = `
+            Hello ${senderName}, I'm YourHelpa! I'm here to help you hire, sell, or offer services safely.
+            
+            To get started, please tell me your primary goal by replying with the number of your choice:
+
+            1️⃣ HIRE someone (find a professional or service)
+            2️⃣ OFFER a service (become a Helpa)
+            3️⃣ SELL items (list products for sale)
+            
+            (This choice determines your experience, but you can always access all features later!)
+            `;
+            user.status = 'ONBOARDING_ROLE_ASKED';
+            await saveUser(user);
+            replyText = onboardingPrompt;
+        
+        } 
+        
+        // --- PROCESSING ONBOARDING ROLE SELECTION ---
+        else if (user.status === 'ONBOARDING_ROLE_ASKED') {
+            const choice = incomingText.trim();
+            let newRole = '';
+
+            // Basic classification logic
+            if (choice.includes('1') || choice.toLowerCase().includes('hire')) {
+                newRole = 'hire';
+            } else if (choice.includes('2') || choice.toLowerCase().includes('offer')) {
+                newRole = 'helpa';
+            } else if (choice.includes('3') || choice.toLowerCase().includes('sell')) {
+                newRole = 'seller';
+            } else {
+                // Invalid input: re-ask the question
+                replyText = "I didn't quite catch that. Please reply with *1*, *2*, or *3* to select your primary goal.";
+                await sendMessage(senderId, replyText);
+                return;
+            }
+
+            user.role = newRole;
+            user.status = 'MAIN_MENU';
+            await saveUser(user);
+
+            // Use AI to generate a warm welcome based on their new role
+            const aiPrompt = `The user selected the role: ${newRole}. Generate a single, concise, and friendly welcome message (max 3 sentences) that confirms their choice and immediately presents the Main Menu. Do not generate the menu itself.`;
+            const welcomeMessage = await generateAIResponse(aiPrompt);
+            
+            // Send the welcome message, then the menu
+            await sendMessage(senderId, welcomeMessage);
+            
+            replyText = getMainMenu(user.role);
+
+        } 
+        
+        // --- MAIN MENU ROUTER ---
+        else if (user.status === 'MAIN_MENU' || user.status === 'AWAITING_FLOW_START') {
+            const choice = incomingText.trim();
+            
+            // Reset status if user is currently awaiting the start of a flow
+            user.status = 'MAIN_MENU';
+            
+            // Simple command handling
+            if (choice.toLowerCase() === 'menu' || choice.toLowerCase() === 'hi') {
+                 replyText = getMainMenu(user.role);
+                 await sendMessage(senderId, replyText);
+                 return;
+            }
+
+            // Route the user based on the selected number
+            switch (choice) {
+                case '1':
+                    // Section 3: Service Request Flow (Hiring Someone)
+                    user.current_flow = 'service_request';
+                    user.status = 'SERVICE_ASK_WHAT';
+                    await saveUser(user);
+                    replyText = await generateAIResponse("The user is starting the 'Find a professional or service provider' flow. Ask them 'What service do you need? (e.g., A plumber, a graphic designer, a tutor)' in a friendly, conversational tone.");
+                    break;
+                case '2':
+                    // Section 4: Buyer Flow (Purchasing Items)
+                    user.current_flow = 'buyer_flow';
+                    user.status = 'BUYER_ASK_ITEM';
+                    await saveUser(user);
+                    replyText = await generateAIResponse("The user is starting the 'Buy an item' flow. Ask them 'What item are you looking to buy? (e.g., A used iPhone 12, a custom-made cake)' in a friendly, conversational tone.");
+                    break;
+                case '3':
+                    // Section 5: Helpa Registration
+                    user.current_flow = 'helpa_registration';
+                    user.status = 'HELPA_ASK_NAME';
+                    await saveUser(user);
+                    replyText = await generateAIResponse("The user is starting the 'Helpa Registration' flow. Ask them for their full name and city to begin registration.");
+                    break;
+                case '4':
+                    // Section 6: Seller Registration
+                    user.current_flow = 'seller_registration';
+                    user.status = 'SELLER_ASK_PRODUCT';
+                    await saveUser(user);
+                    replyText = await generateAIResponse("The user is starting the 'Seller Registration' flow. Ask them for the name and a short description of the first item they want to list.");
+                    break;
+                case '5':
+                    // Section 8: Job Execution Tracking (Placeholder)
+                    replyText = "The *My Active Jobs* feature is under construction! Check back soon.";
+                    break;
+                case '6':
+                    // Section 12: Support (Placeholder)
+                    replyText = await generateAIResponse("The user needs support. Acknowledge this and offer a way to contact a human admin using a mock email address: support@yourhelpa.com.");
+                    break;
+                default:
+                    // If AI doesn't recognize the input, prompt for menu options
+                    replyText = await generateAIResponse(`The user sent: "${incomingText}". They are at the Main Menu. They need to be guided back to choosing a numbered option from the menu.`);
+                    break;
+            }
+        } 
+        
+        // --- DEFAULT FALLBACK: AI handles conversation based on current context ---
+        else {
+            // If we're not in a specific flow step, fall back to the main menu
+            replyText = getMainMenu(user.role);
+        }
+        
+        // Send the final generated response
+        await sendMessage(senderId, replyText);
+
+    } catch (error) {
+        console.error("Critical error in handleMessageFlow:", error.message);
+        await sendMessage(senderId, "A critical system error occurred while processing your request. Please try again later.");
     }
-    
-    let user = await getUserState(senderId);
-
-    let replyText = '';
-
-    // --- NEW USER ONBOARDING (Section 1.1) ---
-    if (user.status === 'NEW' || user.status === 'ERROR') {
-        const onboardingPrompt = `
-        Hello ${senderName}, I'm YourHelpa! I'm here to help you hire, sell, or offer services safely.
-        
-        To get started, please tell me your primary goal by replying with the number of your choice:
-
-        1️⃣ HIRE someone (find a professional or service)
-        2️⃣ OFFER a service (become a Helpa)
-        3️⃣ SELL items (list products for sale)
-        
-        (This choice determines your experience, but you can always access all features later!)
-        `;
-        user.status = 'ONBOARDING_ROLE_ASKED';
-        await saveUser(user);
-        replyText = onboardingPrompt;
-    
-    } 
-    
-    // --- PROCESSING ONBOARDING ROLE SELECTION ---
-    else if (user.status === 'ONBOARDING_ROLE_ASKED') {
-        const choice = incomingText.trim();
-        let newRole = '';
-
-        // Basic classification logic
-        if (choice.includes('1') || choice.toLowerCase().includes('hire')) {
-            newRole = 'hire';
-        } else if (choice.includes('2') || choice.toLowerCase().includes('offer')) {
-            newRole = 'helpa';
-        } else if (choice.includes('3') || choice.toLowerCase().includes('sell')) {
-            newRole = 'seller';
-        } else {
-            // Invalid input: re-ask the question
-            replyText = "I didn't quite catch that. Please reply with *1*, *2*, or *3* to select your primary goal.";
-            await sendMessage(senderId, replyText);
-            return;
-        }
-
-        user.role = newRole;
-        user.status = 'MAIN_MENU';
-        await saveUser(user);
-
-        // Use AI to generate a warm welcome based on their new role
-        const aiPrompt = `The user selected the role: ${newRole}. Generate a single, concise, and friendly welcome message (max 3 sentences) that confirms their choice and immediately presents the Main Menu. Do not generate the menu itself.`;
-        const welcomeMessage = await generateAIResponse(aiPrompt);
-        
-        // Send the welcome message, then the menu
-        await sendMessage(senderId, welcomeMessage);
-        
-        replyText = getMainMenu(user.role);
-
-    } 
-    
-    // --- MAIN MENU ROUTER ---
-    else if (user.status === 'MAIN_MENU' || user.status === 'AWAITING_FLOW_START') {
-        const choice = incomingText.trim();
-        
-        // Reset status if user is currently awaiting the start of a flow
-        user.status = 'MAIN_MENU';
-        
-        // Simple command handling
-        if (choice.toLowerCase() === 'menu' || choice.toLowerCase() === 'hi') {
-             replyText = getMainMenu(user.role);
-             await sendMessage(senderId, replyText);
-             return;
-        }
-
-        // Route the user based on the selected number
-        switch (choice) {
-            case '1':
-                // Section 3: Service Request Flow (Hiring Someone)
-                user.current_flow = 'service_request';
-                user.status = 'SERVICE_ASK_WHAT';
-                await saveUser(user);
-                replyText = await generateAIResponse("The user is starting the 'Find a professional or service provider' flow. Ask them 'What service do you need? (e.g., A plumber, a graphic designer, a tutor)' in a friendly, conversational tone.");
-                break;
-            case '2':
-                // Section 4: Buyer Flow (Purchasing Items)
-                user.current_flow = 'buyer_flow';
-                user.status = 'BUYER_ASK_ITEM';
-                await saveUser(user);
-                replyText = await generateAIResponse("The user is starting the 'Buy an item' flow. Ask them 'What item are you looking to buy? (e.g., A used iPhone 12, a custom-made cake)' in a friendly, conversational tone.");
-                break;
-            case '3':
-                // Section 5: Helpa Registration
-                user.current_flow = 'helpa_registration';
-                user.status = 'HELPA_ASK_NAME';
-                await saveUser(user);
-                replyText = await generateAIResponse("The user is starting the 'Helpa Registration' flow. Ask them for their full name and city to begin registration.");
-                break;
-            case '4':
-                // Section 6: Seller Registration
-                user.current_flow = 'seller_registration';
-                user.status = 'SELLER_ASK_PRODUCT';
-                await saveUser(user);
-                replyText = await generateAIResponse("The user is starting the 'Seller Registration' flow. Ask them for the name and a short description of the first item they want to list.");
-                break;
-            case '5':
-                // Section 8: Job Execution Tracking (Placeholder)
-                replyText = "The *My Active Jobs* feature is under construction! Check back soon.";
-                break;
-            case '6':
-                // Section 12: Support (Placeholder)
-                replyText = await generateAIResponse("The user needs support. Acknowledge this and offer a way to contact a human admin using a mock email address: support@yourhelpa.com.");
-                break;
-            default:
-                // If AI doesn't recognize the input, prompt for menu options
-                isAIResponse = true;
-                replyText = await generateAIResponse(`The user sent: "${incomingText}". They are at the Main Menu. They need to be guided back to choosing a numbered option from the menu.`);
-                break;
-        }
-    } 
-    
-    // --- DEFAULT FALLBACK: AI handles conversation based on current context ---
-    else {
-        // If we're not in a specific flow step, fall back to the main menu
-        replyText = getMainMenu(user.role);
-    }
-    
-    // Send the final generated response
-    await sendMessage(senderId, replyText);
 }
 
 
@@ -444,4 +406,5 @@ app.post('/webhook', (req, res) => {
 app.listen(PORT, () => {
     console.log(`\nYourHelpa Server is listening on port ${PORT}`);
     console.log(`Webhook URL: https://yourhelpa-chatbot.onrender.com/webhook`);
+    console.log("✅ Google Apps Script URL detected. State management delegated to GAS.");
 });
