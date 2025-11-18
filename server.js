@@ -4,17 +4,30 @@ const bodyParser = require('body-parser');
 const axios = require('axios'); // Used to make API calls to Meta
 
 const app = express();
-const PORT = 5000;
 
 // =========================================================================
-// !!! CRITICAL CONFIGURATION DETAILS (GET FROM META API SETUP PAGE) !!!
+// !!! CRITICAL CONFIGURATION DETAILS - READ FROM ENVIRONMENT VARIABLES !!!
 // =========================================================================
-const VERIFY_TOKEN = 'MY_CHATBOT_SECRET_TOKEN_12031993'; // Your current verify token (must match Meta dashboard)
-const ACCESS_TOKEN = 'EAAQxSymgxKQBP0TLqPDPV2Gw8qjW6zvWZBOQEfm4RYodjoyUMgV5w2TKG3Jd0zLX75CMZBEYd7ract5ZCdtiKOelHMr2duyAHau8fOSLuziy1IdHydS0Trj7LeFDLmnEe7FPD2qwPIeLI5PZArGgrslvmZAMOxVH1kLZC9TJofYWwNqgECcdjmJmMhQgz6RUZBQCw9GZBXlkvwqSlBoXaQjvtsa9ZCa9gQjrTsHQoWysRIGCjeQQELX9LZAvyPMe32zrgOKMVjtbbIIbJoJwUmvPcF8pk4ldPQ9Yt4XSQZD';      // <<< REPLACE with the long Access Token
-const PHONE_NUMBER_ID = '1180098797552804';      // <<< REPLACE with the Phone Number ID (e.g., 7693xxxxxx)
+
+// PORT is read from the environment (Render requires this)
+const PORT = process.env.PORT || 5000;
+
+// These sensitive values are read from the environment variables 
+// you must set in the Render dashboard for security.
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
+const ACCESS_TOKEN = process.env.ACCESS_TOKEN;
+const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 
 // Construct the base URL for sending messages
 const META_API_URL = `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`;
+
+// Check for missing environment variables before starting
+if (!VERIFY_TOKEN || !ACCESS_TOKEN || !PHONE_NUMBER_ID) {
+    console.error("CRITICAL ERROR: One or more required environment variables are missing.");
+    console.error("Please ensure VERIFY_TOKEN, ACCESS_TOKEN, and PHONE_NUMBER_ID are set correctly in your Render dashboard.");
+    // Exit the process since we cannot connect to the Meta API without these
+    process.exit(1); 
+}
 // =========================================================================
 
 // Use body-parser to parse application/json
@@ -23,10 +36,6 @@ app.use(bodyParser.json());
 // --- FUNCTION TO SEND MESSAGES ---
 // This function constructs and sends a text message reply using the Meta API
 async function sendMessage(to, text) {
-    if (ACCESS_TOKEN === 'YOUR_GENERATED_ACCESS_TOKEN') {
-        console.error("ERROR: ACCESS_TOKEN not set. Cannot send reply.");
-        return;
-    }
     try {
         await axios.post(META_API_URL, {
             messaging_product: "whatsapp",
@@ -38,6 +47,7 @@ async function sendMessage(to, text) {
             }
         }, {
             headers: {
+                // IMPORTANT: Using the secure ACCESS_TOKEN from the environment
                 'Authorization': `Bearer ${ACCESS_TOKEN}`,
                 'Content-Type': 'application/json'
             }
@@ -58,9 +68,10 @@ app.get('/webhook', (req, res) => {
 
     if (mode === 'subscribe' && token === VERIFY_TOKEN) {
         console.log('WEBHOOK VERIFIED successfully!');
+        // Respond with the challenge token to complete the handshake
         res.status(200).send(challenge);
     } else {
-        console.error('Webhook verification failed!');
+        console.error('Webhook verification failed! Tokens do not match.');
         res.sendStatus(403);
     }
 });
@@ -86,7 +97,7 @@ app.post('/webhook', (req, res) => {
                     // === CHATBOT LOGIC: Echo the message back to the sender ===
                     const replyText = `Hello ${senderName}! You sent: "${incomingText}". The server is running and attempting to reply!`;
 
-                    // Call the new send message function
+                    // Call the send message function
                     sendMessage(senderId, replyText);
 
                     console.log('------------------------------\n');
@@ -94,14 +105,13 @@ app.post('/webhook', (req, res) => {
             });
         });
     }
-    // ALWAYS respond with a 200 OK to Meta
+    // ALWAYS respond with a 200 OK to Meta within 20 seconds
     res.sendStatus(200);
 });
 
 // --- START SERVER ---
 app.listen(PORT, () => {
     console.log(`\nServer is listening on port ${PORT}`);
-    console.log(`Local Webhook URL: http://localhost:${PORT}/webhook`);
-    // NOTE: Update this placeholder with your current NGROK URL
-    console.log(`NGROK Public URL: PASTE_YOUR_NGROK_URL_HERE/webhook`);
+    // Your verified Render URL: https://yourhelpa-chatbot.onrender.com/webhook
+    console.log(`Deployment Ready! Webhook URL: https://yourhelpa-chatbot.onrender.com/webhook`);
 });
