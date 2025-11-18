@@ -18,22 +18,35 @@ const ACCESS_TOKEN = process.env.ACCESS_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 
 // Gemini API Configuration
-// NOTE: This MUST be set in your Render environment variables to work!
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || ""; 
 const GEMINI_MODEL = 'gemini-2.5-flash-preview-09-2025';
 
 // Global Firebase variables provided by the Canvas environment
+// --- FIX FOR FIREBASE CONFIG ERROR (ensuring robust access) ---
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
-const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+let firebaseConfig = null;
+let initialAuthToken = null;
+
+if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+    try {
+        firebaseConfig = JSON.parse(__firebase_config);
+    } catch (e) {
+        console.error("Error parsing __firebase_config:", e);
+    }
+}
+if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+    initialAuthToken = __initial_auth_token;
+}
+// --- END OF FIX ---
+
 
 if (!VERIFY_TOKEN || !ACCESS_TOKEN || !PHONE_NUMBER_ID) {
     console.error("CRITICAL ERROR: WhatsApp environment variables are missing.");
     process.exit(1); 
 }
 if (!firebaseConfig) {
-    console.error("CRITICAL ERROR: Firebase configuration (__firebase_config) is missing.");
-    process.exit(1);
+    console.error("CRITICAL ERROR: Firebase configuration (__firebase_config) is missing. The app cannot start without it.");
+    process.exit(1); // Exit if the configuration is missing
 }
 
 // Global Firebase instances (initialized later)
@@ -369,10 +382,7 @@ async function handleMessageFlow(senderId, senderName, incomingText) {
     
     // --- DEFAULT FALLBACK: AI handles conversation based on current context ---
     else {
-        // Handle all subsequent conversation steps (e.g., asking for job details)
-        // Future code will go here for SERVICE_ASK_WHAT, etc.
-        
-        // For now, if we're not in a specific flow step, fall back to the main menu
+        // If we're not in a specific flow step, fall back to the main menu
         replyText = getMainMenu(user.role);
     }
     
