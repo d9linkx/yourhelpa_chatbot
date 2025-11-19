@@ -6,7 +6,7 @@ const axios = require('axios'); // Used to make API calls to Meta and Apps Scrip
 const app = express();
 
 // =========================================================================
-// !!! CRITICAL CONFIGURATION DETAILS - READ FROM ENVIRONMENT VARIABLES !!!
+// !!! CRITICAL CONFIGURATION DETAILS !!!
 // =========================================================================
 
 const PORT = process.env.PORT || 5000;
@@ -19,7 +19,6 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const GEMINI_MODEL = 'gemini-2.5-flash-preview-09-2025';
 
 // --- GOOGLE APPS SCRIPT CONFIGURATION ---
-// IMPORTANT: This is the URL you get after deploying the Code.gs script as a Web App.
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycby8gGXRYTiRjWcPZbu0gcTEb0KPoskQlPKbEnphtvPysZYcnyX4_KcGcXJy6g0h2ndM_g/exec'; 
 
 // --- ENVIRONMENT VARIABLE CHECKS ---
@@ -27,11 +26,9 @@ if (!VERIFY_TOKEN || !ACCESS_TOKEN || !PHONE_NUMBER_ID) {
     console.error("CRITICAL ERROR: WhatsApp environment variables are missing.");
     process.exit(1); 
 }
-// Note: APPS_SCRIPT_URL is now hardcoded, so no environment variable check is needed here.
 
 // =========================================================================
 // GOOGLE APPS SCRIPT & USER STATE MANAGEMENT 
-// (Node.js Server now acts as a client to the Apps Script API)
 // =========================================================================
 
 /**
@@ -47,18 +44,15 @@ async function getUserState(phone) {
             phone: phone
         });
         
-        // The Apps Script should return a JSON object with { success: true, user: {...} }
         if (response.data.success && response.data.user) {
             return response.data.user;
         } else {
-             // Handle case where script ran but returned an error response body
             console.error("Apps Script GET_STATE failed:", response.data.error || "Unknown response structure");
             throw new Error("Apps Script returned an unsuccessful response.");
         }
 
     } catch (e) {
         console.error("Error communicating with Apps Script (GET_STATE):", e.response?.data || e.message);
-        // Return a default/error state object to prevent crashes in the main flow
         return { 
             phone: phone, 
             user_id: `ERROR-${Date.now()}`,
@@ -66,7 +60,7 @@ async function getUserState(phone) {
             name: '',
             city: '',
             created_at: new Date().toISOString(),
-            status: 'NEW', // Default to NEW to restart onboarding if a crash happens
+            status: 'NEW', 
             current_flow: 'onboarding',
             row_index: 0 
         };
@@ -74,9 +68,8 @@ async function getUserState(phone) {
 }
 
 /**
- * Saves or updates the user profile in Google Sheets by making a POST request
- * to the deployed Google Apps Script Web App.
- * @param {object} user The user object to save. Must contain row_index (set by Apps Script).
+ * Saves or updates the user profile in Google Sheets.
+ * @param {object} user The user object to save. Must contain row_index.
  */
 async function saveUser(user) {
     try {
@@ -86,7 +79,7 @@ async function saveUser(user) {
         });
         
         if (response.data.success) {
-            console.log(`User ${user.phone} state updated via Apps Script.`);
+            console.log(`User ${user.phone} state updated via Apps Script. Status: ${user.status}`);
         } else {
             console.error("Apps Script SAVE_STATE failed:", response.data.error || "Unknown response structure");
         }
@@ -97,32 +90,58 @@ async function saveUser(user) {
 }
 
 // =========================================================================
-// GEMINI AI INTEGRATION (Section 13)
+// GEMINI AI INTEGRATION
 // =========================================================================
 
 const SYSTEM_INSTRUCTION = `
-You are YourHelpa, a WhatsApp-based conversational marketplace. Your primary goal is to facilitate simple and safe transactions between users.
+You are YourHelpa, a WhatsApp-based conversational marketplace operating exclusively in **Nigeria**, currently serving users in **Lagos State** and **Oyo State**.
+Your primary goal is to facilitate simple and safe transactions for both **Services (Hiring)** and **Items (Buying/Selling)**.
 Your persona is friendly, encouraging, highly reliable, and concise. You use emojis sparingly for clarity.
-Your job is to guide the user through structured steps (onboarding, service request, registration) and interpret natural language messages.
+Crucially, you are capable of fetching and summarizing seller details, product catalogs, service portfolios, and associated online presence (websites, blogs, social media) from the web to match user requests.
 
-Current Task: Act as the conversational router and onboarding guide.
+Current Task: Act as the conversational router and flow guide, focusing on the Nigerian context.
 
 Response Rules:
 1. Always keep responses short and to the point.
-2. When presenting options, use numbered lists or clear short sentences with the option in CAPITAL LETTERS if buttons are not available.
-3. If the user is NEW, start the onboarding immediately.
-4. If the user is at the MAIN_MENU, present the options based on their 'role'.
+2. All location references must prioritize Lagos or Oyo State.
+3. When presenting options, use numbered lists.
 `;
 
+// Define the JSON schema for service request parsing
+const SERVICE_REQUEST_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    service_category: { 
+        type: "STRING", 
+        description: "A single, normalized category for the service or item (e.g., 'Plumber', 'Tailor', 'iPhone 12', 'Custom Cake'). Must be relevant to Nigerian goods/services. Do not use 'Other'." 
+    },
+    description_summary: { 
+        type: "STRING", 
+        description: "A very concise summary of the specific job or item requested, max 10 words." 
+    },
+    extracted_city: { 
+        type: "STRING", 
+        description: "The city or area mentioned (e.g., 'Ikeja', 'Yaba', 'Ibadan', 'Ogbomosho'). Leave empty if not found." 
+    },
+    extracted_state: { 
+        type: "STRING", 
+        description: "The state (Lagos or Oyo) mentioned or inferred from the city. Default to 'Lagos' if no location is mentioned. Only use 'Lagos' or 'Oyo'." 
+    },
+    extracted_budget: { 
+        type: "STRING", 
+        description: "The budget, price range, or compensation mentioned, if any (e.g., '₦50,000', '$100'). Leave empty if not found." 
+    }
+  },
+  required: ["service_category", "description_summary"]
+};
+
+
 /**
- * Calls the Gemini API to generate a conversational response.
- * @param {string} text The user's input text.
- * @param {string} systemPrompt The system instruction tailored to the current step.
- * @returns {Promise<string>} The generated text response.
+ * Calls the Gemini API for conversational responses (Text-to-Text).
  */
 async function generateAIResponse(text, systemPrompt = SYSTEM_INSTRUCTION) {
     if (!GEMINI_API_KEY) {
-        return "⚠️ AI Service Error: GEMINI_API_KEY is not configured on the server. Please add it to Render.";
+        return "⚠️ AI Service Error: GEMINI_API_KEY is not configured.";
     }
     
     const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
@@ -140,15 +159,59 @@ async function generateAIResponse(text, systemPrompt = SYSTEM_INSTRUCTION) {
         });
         
         const result = response.data;
-        const generatedText = result.candidates?.[0]?.content?.parts?.[0]?.text;
-        
-        return generatedText || "Sorry, I couldn't process that request right now. Please try again.";
+        return result.candidates?.[0]?.content?.parts?.[0]?.text || "Sorry, I couldn't process that request right now. Please try again.";
 
     } catch (error) {
-        console.error("Gemini API Error:", error.response?.data || error.message);
+        console.error("Gemini Conversational API Error:", error.response?.data || error.message);
         return "I'm having trouble connecting to my brain. Please wait a moment and try sending your message again.";
     }
 }
+
+/**
+ * Calls the Gemini API for structured output (JSON) with Google Search Grounding.
+ */
+async function parseServiceRequest(requestText) {
+    if (!GEMINI_API_KEY) {
+        return null;
+    }
+    
+    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+    
+    const parsingInstruction = `
+        You are a highly efficient text parsing engine focusing on the Nigerian market in Lagos and Oyo States. Analyze the following user request for a service or item purchase.
+        Extract the most specific category, a very brief summary, the city/area, the state (Lagos or Oyo), and the budget/price.
+        Your entire output MUST be a JSON object adhering to the provided schema.
+        User Request: "${requestText}"
+    `;
+
+    const payload = {
+        contents: [{ parts: [{ text: parsingInstruction }] }],
+        tools: [{ "google_search": {} }], // Enable Google Search for contextual grounding
+        config: {
+            responseMimeType: "application/json",
+            responseSchema: SERVICE_REQUEST_SCHEMA,
+        },
+    };
+
+    try {
+        const response = await axios.post(apiUrl, payload, {
+            headers: { 'Content-Type': 'application/json' }
+        });
+        
+        const result = response.data;
+        const jsonString = result.candidates?.[0]?.content?.parts?.[0]?.text;
+        
+        if (jsonString) {
+            return JSON.parse(jsonString);
+        }
+        return null;
+
+    } catch (error) {
+        console.error("Gemini Structured Parsing API Error:", error.response?.data || error.message);
+        return null;
+    }
+}
+
 
 // =========================================================================
 // WHATSAPP HELPER FUNCTIONS
@@ -157,12 +220,9 @@ async function generateAIResponse(text, systemPrompt = SYSTEM_INSTRUCTION) {
 const META_API_URL = `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`;
 
 /**
- * Returns the Main Menu structure based on the user's role (Section 2).
- * @param {string} role The user's assigned role ('hire', 'helpa', 'seller', 'buyer', 'unassigned').
- * @returns {string} The formatted menu text.
+ * Returns the Main Menu structure based on the user's role.
  */
 function getMainMenu(role) {
-    // Role-specific options
     let options = [];
     if (role === 'hire' || role === 'unassigned') {
         options.push("1️⃣ Find a professional or service provider (Hire)");
@@ -177,11 +237,10 @@ function getMainMenu(role) {
         options.push("4️⃣ List items for sale (Seller)");
     }
 
-    // Common options
     options.push("5️⃣ My Active Jobs or Purchases");
     options.push("6️⃣ Support");
 
-    let menu = `✨ *Welcome to YourHelpa!* ✨\n\nYour current role is *${role.toUpperCase()}*. How can I help you today? Please reply with the number of your choice:\n\n`;
+    let menu = `🇳🇬 *Welcome to YourHelpa!* We connect you to verified services and sellers in *Lagos* and *Oyo State*. How can I help you today? Please reply with the number of your choice:\n\n`;
     menu += options.join('\n');
     
     return menu;
@@ -189,7 +248,6 @@ function getMainMenu(role) {
 
 
 async function sendMessage(to, text) {
-    // Uses the working Meta API configuration
     try {
         await axios.post(META_API_URL, {
             messaging_product: "whatsapp",
@@ -216,27 +274,64 @@ async function sendMessage(to, text) {
 // =========================================================================
 
 /**
+ * Utility function to save updated details from parsed data back to the user object.
+ */
+function updateUserDetails(user, parsedData) {
+    user.service_category = parsedData.service_category;
+    user.description_summary = parsedData.description_summary;
+    user.city_initial = parsedData.extracted_city;
+
+    // Ensure state is one of the target states or default to Lagos
+    let extractedState = parsedData.extracted_state.toLowerCase();
+    if (extractedState.includes('oyo')) {
+        user.state_initial = 'Oyo';
+    } else {
+        user.state_initial = 'Lagos'; // Default
+    }
+    user.budget_initial = parsedData.extracted_budget;
+    return user;
+}
+
+/**
+ * Builds the confirmation message for the user based on their current saved state.
+ */
+function buildConfirmationMessage(user, type = 'service') {
+    const category = type === 'service' ? user.service_category : user.item_name;
+    const summary = type === 'service' ? user.description_summary : user.item_description;
+    const budgetDisplay = user.budget_initial || "₦XXXX";
+
+    let message = `*Got it!* You're looking for a *${category}* to help with: _"${summary}"_.\n\n`;
+
+    message += `I see this job/purchase is in *${user.state_initial} State*. `;
+
+    if (user.city_initial) {
+        message += `(Specifically the ${user.city_initial} area). `;
+    }
+
+    message += `Is this correct, and is your estimated budget/price around *${budgetDisplay}*?\n\n`;
+    message += `Reply with *YES* to confirm these details, or send the correct budget/city/state to adjust.`;
+    return message;
+}
+
+/**
  * Main function to handle the user's message and determine the next step.
  */
 async function handleMessageFlow(senderId, senderName, incomingText) {
     try {
-        // State is now managed by the Apps Script API call
         let user = await getUserState(senderId);
-
         let replyText = '';
+        const lowerText = incomingText.trim().toLowerCase();
 
-        // --- NEW USER ONBOARDING (Section 1.1) ---
+        // --- NEW USER ONBOARDING ---
         if (user.status === 'NEW' || user.status === 'unassigned' || user.status === 'ERROR') {
             const onboardingPrompt = `
-            Hello ${senderName}, I'm YourHelpa! I'm here to help you hire, sell, or offer services safely.
+            Hello ${senderName}, I'm YourHelpa, your Nigerian marketplace assistant!
             
-            To get started, please tell me your primary goal by replying with the number of your choice:
+            To get started in Lagos or Oyo State, please tell me your primary goal by replying with the number of your choice:
 
             1️⃣ HIRE someone (find a professional or service)
             2️⃣ OFFER a service (become a Helpa)
             3️⃣ SELL items (list products for sale)
-            
-            (This choice determines your experience, but you can always access all features later!)
             `;
             user.status = 'ONBOARDING_ROLE_ASKED';
             await saveUser(user);
@@ -246,18 +341,16 @@ async function handleMessageFlow(senderId, senderName, incomingText) {
         
         // --- PROCESSING ONBOARDING ROLE SELECTION ---
         else if (user.status === 'ONBOARDING_ROLE_ASKED') {
-            const choice = incomingText.trim();
+            const choice = lowerText;
             let newRole = '';
 
-            // Basic classification logic
-            if (choice.includes('1') || choice.toLowerCase().includes('hire')) {
+            if (choice.includes('1') || choice.includes('hire')) {
                 newRole = 'hire';
-            } else if (choice.includes('2') || choice.toLowerCase().includes('offer')) {
+            } else if (choice.includes('2') || choice.includes('offer')) {
                 newRole = 'helpa';
-            } else if (choice.includes('3') || choice.toLowerCase().includes('sell')) {
+            } else if (choice.includes('3') || choice.includes('sell')) {
                 newRole = 'seller';
             } else {
-                // Invalid input: re-ask the question
                 replyText = "I didn't quite catch that. Please reply with *1*, *2*, or *3* to select your primary goal.";
                 await sendMessage(senderId, replyText);
                 return;
@@ -267,84 +360,175 @@ async function handleMessageFlow(senderId, senderName, incomingText) {
             user.status = 'MAIN_MENU';
             await saveUser(user);
 
-            // Use AI to generate a warm welcome based on their new role
-            const aiPrompt = `The user selected the role: ${newRole}. Generate a single, concise, and friendly welcome message (max 3 sentences) that confirms their choice and immediately presents the Main Menu. Do not generate the menu itself.`;
+            const aiPrompt = `The user selected the role: ${newRole}. Generate a single, concise, and friendly welcome message (max 3 sentences) that confirms their choice, emphasizes the Lagos/Oyo focus, and encourages them to proceed.`;
             const welcomeMessage = await generateAIResponse(aiPrompt);
             
-            // Send the welcome message, then the menu
             await sendMessage(senderId, welcomeMessage);
-            
             replyText = getMainMenu(user.role);
 
         } 
         
+        // --- FLOW 1: SERVICE REQUEST ---
+        else if (user.status === 'SERVICE_ASK_WHAT') {
+            
+            const parsedData = await parseServiceRequest(incomingText);
+
+            if (!parsedData) {
+                replyText = "I had trouble understanding that. Could you please describe the service you need again? E.g., 'Need a competent tailor in Ibadan to make an outfit for ₦15,000.'";
+            } else {
+                user = updateUserDetails(user, parsedData);
+                user.status = 'SERVICE_CONFIRM_DETAILS'; 
+                await saveUser(user);
+                replyText = buildConfirmationMessage(user, 'service');
+            }
+        } 
+        
+        else if (user.status === 'SERVICE_CONFIRM_DETAILS') {
+            if (lowerText.includes('yes') || lowerText.includes('yup') || lowerText.includes('correct')) {
+                // CONFIRMED: Move to the matching phase
+                user.status = 'SERVICE_MATCHING';
+                await saveUser(user);
+                replyText = await generateAIResponse(`The user confirmed the request: hiring a ${user.service_category} in ${user.city_initial}, ${user.state_initial} for ${user.budget_initial}. Respond excitedly (max 2 sentences) and let them know you are now searching for the best, verified professionals (Helpas) matching these criteria in the system.`);
+            } else {
+                // CORRECTION: Re-parse the input to update the details
+                const parsedData = await parseServiceRequest(incomingText);
+
+                if (!parsedData) {
+                    replyText = "Sorry, I still didn't get a clear correction. Please confirm with *YES* or send a clear correction (e.g., 'Change the budget to ₦20,000' or 'It's in Lekki, Lagos').";
+                } else {
+                    user = updateUserDetails(user, parsedData);
+                    // Stay in this state, and re-ask for confirmation with the new data
+                    await saveUser(user); 
+                    replyText = buildConfirmationMessage(user, 'service');
+                }
+            }
+        }
+
+        // --- FLOW 2: ITEM PURCHASE ---
+        else if (user.status === 'BUYER_ASK_ITEM') {
+            
+            const parsedData = await parseServiceRequest(incomingText);
+
+            if (!parsedData) {
+                replyText = "I need a better description of the item. What exactly are you looking for? E.g., 'A used iPhone 12 Pro Max in good condition in Ibadan, budget ₦350,000'.";
+            } else {
+                
+                // Save the parsed data for the item
+                user.item_name = parsedData.service_category; 
+                user.item_description = parsedData.description_summary;
+                user.city_initial = parsedData.extracted_city;
+                
+                let extractedState = parsedData.extracted_state.toLowerCase();
+                if (extractedState.includes('oyo')) {
+                    user.state_initial = 'Oyo';
+                } else {
+                    user.state_initial = 'Lagos'; // Default
+                }
+                user.budget_initial = parsedData.extracted_budget;
+
+                user.status = 'BUYER_CONFIRM_DETAILS';
+                await saveUser(user);
+                replyText = buildConfirmationMessage(user, 'item');
+            }
+        }
+
+        else if (user.status === 'BUYER_CONFIRM_DETAILS') {
+            if (lowerText.includes('yes') || lowerText.includes('yup') || lowerText.includes('correct')) {
+                // CONFIRMED: Move to the matching phase
+                user.status = 'BUYER_MATCHING';
+                await saveUser(user);
+                replyText = await generateAIResponse(`The user confirmed the item request: buying a ${user.item_name} in ${user.city_initial}, ${user.state_initial} for ${user.budget_initial}. Respond excitedly (max 2 sentences) and let them know you are now searching for the best, verified sellers matching these criteria in the system.`);
+            } else {
+                // CORRECTION: Re-parse the input to update the details
+                const parsedData = await parseServiceRequest(incomingText);
+
+                if (!parsedData) {
+                    replyText = "Sorry, I still didn't get a clear correction. Please confirm with *YES* or send a clear correction (e.g., 'Change the price to ₦300,000' or 'It should be a brand new item').";
+                } else {
+                    // Update the user details with the re-parsed data
+                    user.item_name = parsedData.service_category; 
+                    user.item_description = parsedData.description_summary;
+                    user.city_initial = parsedData.extracted_city;
+                    
+                    let extractedState = parsedData.extracted_state.toLowerCase();
+                    if (extractedState.includes('oyo')) {
+                        user.state_initial = 'Oyo';
+                    } else {
+                        user.state_initial = 'Lagos'; // Default
+                    }
+                    user.budget_initial = parsedData.extracted_budget;
+
+                    // Stay in this state, and re-ask for confirmation with the new data
+                    await saveUser(user); 
+                    replyText = buildConfirmationMessage(user, 'item');
+                }
+            }
+        }
+
+
         // --- MAIN MENU ROUTER ---
         else if (user.status === 'MAIN_MENU' || user.status === 'AWAITING_FLOW_START') {
-            const choice = incomingText.trim();
-            
-            // Reset status if user is currently awaiting the start of a flow
-            user.status = 'MAIN_MENU';
             
             // Simple command handling
-            if (choice.toLowerCase() === 'menu' || choice.toLowerCase() === 'hi') {
+            if (lowerText === 'menu' || lowerText === 'hi' || lowerText === 'hello') {
                  replyText = getMainMenu(user.role);
                  await sendMessage(senderId, replyText);
                  return;
             }
 
             // Route the user based on the selected number
-            switch (choice) {
+            switch (lowerText) {
                 case '1':
-                    // Section 3: Service Request Flow (Hiring Someone)
+                    // Service Request Flow (Hiring Someone)
                     user.current_flow = 'service_request';
                     user.status = 'SERVICE_ASK_WHAT';
                     await saveUser(user);
-                    replyText = await generateAIResponse("The user is starting the 'Find a professional or service provider' flow. Ask them 'What service do you need? (e.g., A plumber, a graphic designer, a tutor)' in a friendly, conversational tone.");
+                    replyText = await generateAIResponse("The user is starting the 'Find a professional or service provider' flow. Ask them 'What service do you need, and where? (e.g., A plumber in Ibadan, a graphic designer in Lagos)' in a friendly, conversational tone.");
                     break;
                 case '2':
-                    // Section 4: Buyer Flow (Purchasing Items)
+                    // Buyer Flow (Purchasing Items)
                     user.current_flow = 'buyer_flow';
                     user.status = 'BUYER_ASK_ITEM';
                     await saveUser(user);
-                    replyText = await generateAIResponse("The user is starting the 'Buy an item' flow. Ask them 'What item are you looking to buy? (e.g., A used iPhone 12, a custom-made cake)' in a friendly, conversational tone.");
+                    replyText = await generateAIResponse("The user is starting the 'Buy an item' flow. Ask them 'What item are you looking to buy, and where? (e.g., A used iPhone 12 in Lagos or a custom cake in Ibadan)' in a friendly, conversational tone.");
                     break;
                 case '3':
                     // Section 5: Helpa Registration
                     user.current_flow = 'helpa_registration';
                     user.status = 'HELPA_ASK_NAME';
                     await saveUser(user);
-                    replyText = await generateAIResponse("The user is starting the 'Helpa Registration' flow. Ask them for their full name and city to begin registration.");
+                    replyText = await generateAIResponse("The user is starting the 'Helpa Registration' flow for Lagos/Oyo. Ask them for their full name and city to begin registration.");
                     break;
                 case '4':
                     // Section 6: Seller Registration
                     user.current_flow = 'seller_registration';
                     user.status = 'SELLER_ASK_PRODUCT';
                     await saveUser(user);
-                    replyText = await generateAIResponse("The user is starting the 'Seller Registration' flow. Ask them for the name and a short description of the first item they want to list.");
+                    replyText = await generateAIResponse("The user is starting the 'Seller Registration' flow. Ask them for the name and a short description of the first item they want to list for sale in Lagos/Oyo.");
                     break;
                 case '5':
-                    // Section 8: Job Execution Tracking (Placeholder)
                     replyText = "The *My Active Jobs* feature is under construction! Check back soon.";
                     break;
                 case '6':
-                    // Section 12: Support (Placeholder)
                     replyText = await generateAIResponse("The user needs support. Acknowledge this and offer a way to contact a human admin using a mock email address: support@yourhelpa.com.");
                     break;
                 default:
-                    // If AI doesn't recognize the input, prompt for menu options
                     replyText = await generateAIResponse(`The user sent: "${incomingText}". They are at the Main Menu. They need to be guided back to choosing a numbered option from the menu.`);
                     break;
             }
         } 
         
-        // --- DEFAULT FALLBACK: AI handles conversation based on current context ---
+        // --- DEFAULT FALLBACK ---
         else {
-            // If we're not in a specific flow step, fall back to the main menu
             replyText = getMainMenu(user.role);
+            user.status = 'MAIN_MENU';
+            await saveUser(user);
         }
         
         // Send the final generated response
-        await sendMessage(senderId, replyText);
+        if (replyText) {
+             await sendMessage(senderId, replyText);
+        }
 
     } catch (error) {
         console.error("Critical error in handleMessageFlow:", error.message);
@@ -357,7 +541,6 @@ async function handleMessageFlow(senderId, senderName, incomingText) {
 // EXPRESS SERVER SETUP
 // =========================================================================
 
-// Use body-parser to parse application/json
 app.use(bodyParser.json());
 
 // --- 1. WEBHOOK VERIFICATION (GET request) ---
@@ -406,5 +589,5 @@ app.post('/webhook', (req, res) => {
 app.listen(PORT, () => {
     console.log(`\nYourHelpa Server is listening on port ${PORT}`);
     console.log(`Webhook URL: https://yourhelpa-chatbot.onrender.com/webhook`);
-    console.log("✅ Google Apps Script URL detected. State management delegated to GAS.");
+    console.log("✅ State management delegated to Google Apps Script.");
 });
