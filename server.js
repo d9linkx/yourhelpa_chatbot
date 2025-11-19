@@ -19,7 +19,8 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const GEMINI_MODEL = 'gemini-2.5-flash-preview-09-2025';
 
 // --- GOOGLE APPS SCRIPT CONFIGURATION (UPDATED URL) ---
-const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyayObttIKkjMFsem9SHGfSSft6-MTmI8rRRYyudCmaC_kPLTlLnRTdBw0TU_5RFShitA/exec'; 
+// CRITICAL FIX: Using the URL provided by the user
+const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyayObttIKkjMFsem9SHGfSSft6-MTmI8rKRYyudCmaC_kPLTlLnRTdBw0TU_5RFShitA/exec'; 
 
 if (!VERIFY_TOKEN || !ACCESS_TOKEN || !PHONE_NUMBER_ID) {
     console.error("CRITICAL ERROR: WhatsApp environment variables are missing.");
@@ -183,7 +184,6 @@ async function getAIIntent(input, role) {
 
     const payload = {
         contents: [{ parts: [{ text: parsingInstruction }] }],
-        // FIX: Changed 'config' to 'generationConfig' to match the Gemini API schema.
         generationConfig: { 
             responseMimeType: "application/json",
             responseSchema: INTENT_SCHEMA,
@@ -252,7 +252,6 @@ async function parseServiceRequest(requestText) {
     const payload = {
         contents: [{ parts: [{ text: parsingInstruction }] }],
         tools: [{ "google_search": {} }], 
-        // FIX: Changed 'config' to 'generationConfig' to match the Gemini API schema.
         generationConfig: { 
             responseMimeType: "application/json",
             responseSchema: SERVICE_REQUEST_SCHEMA,
