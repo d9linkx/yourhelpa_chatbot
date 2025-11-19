@@ -11,14 +11,17 @@ const app = express();
 
 const PORT = process.env.PORT || 5000;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
-const ACCESS_TOKEN = process.env.ACCESS_TOKEN;
-const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
+// NOTE: The correct Phone Number ID (805371682666878) must be set for PHONE_NUMBER_ID.
+// CRITICAL: Ensure ACCESS_TOKEN is a PERMANENT token in your Render environment.
+const ACCESS_TOKEN = process.env.ACCESS_TOKEN; 
+const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID; 
 
 // Gemini API Configuration
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || ""; 
 const GEMINI_MODEL = 'gemini-2.5-flash-preview-09-2025';
 
 // --- GOOGLE APPS SCRIPT CONFIGURATION ---
+// NOTE: Make sure your Google Sheet has all required headers in Row 1!
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycby8gGXRYTiRjWcPZbu0gcTEb0KPoskQlPKbEnphtvPysZYcnyX4_KcGcXJy6g0h2ndM_g/exec'; 
 
 // --- ENVIRONMENT VARIABLE CHECKS ---
@@ -212,7 +215,6 @@ async function parseServiceRequest(requestText) {
     }
 }
 
-
 // =========================================================================
 // WHATSAPP HELPER FUNCTIONS
 // =========================================================================
@@ -267,6 +269,58 @@ async function sendMessage(to, text) {
     } catch (error) {
         console.error("Error sending message:", error.response?.data || error.message);
     }
+}
+
+// =========================================================================
+// MATCHING LOGIC (New Feature)
+// =========================================================================
+
+/**
+ * Handles the AI-powered matching process for services or items.
+ * Uses Gemini with Google Search grounding to simulate real-world data fetching.
+ */
+async function handleMatching(user, senderId) {
+    const isService = user.current_flow === 'service_request';
+    const flowType = isService ? 'Service Request (Hiring)' : 'Item Purchase (Buying)';
+    const category = isService ? user.service_category : user.item_name;
+    const summary = isService ? user.description_summary : user.item_description;
+    const providerRole = isService ? 'Helpa (Service Provider)' : 'Seller (Product Vendor)';
+    const profileLinkType = isService ? 'Service Portfolio' : 'Product Catalog';
+    
+    const matchingPrompt = `
+        You are a Nigerian Market Intelligence Engine for YourHelpa. The user needs help with a ${flowType}.
+        
+        Goal: Find 3 top-rated, *mock* ${providerRole}s in Nigeria that match the user's request, focusing on Lagos and Oyo states.
+        
+        User Request:
+        - Category: ${category}
+        - Summary: "${summary}"
+        - Location: ${user.city_initial || 'Anywhere'}, ${user.state_initial} State
+        - Budget: ${user.budget_initial || 'Flexible'}
+
+        Task:
+        1. Use Google Search grounding to simulate finding relevant Nigerian market businesses, popular services, and product examples within the Lagos/Oyo area.
+        2. Generate a response that lists exactly *three* potential ${providerRole} matches.
+        3. For each match, provide:
+           - A Nigerian-sounding **Name** (e.g., 'Ayo's Auto Services').
+           - A 1-sentence **Description** of their portfolio and reputation (e.g., 'Highly rated for swift car repair in Ibadan, specializing in Honda models.').
+           - A **Mock Portfolio Link** (This is crucial: simulate a web link, blog, or WhatsApp Business link, e.g., 'Web: https://ayoautos.ng' or 'WhatsApp: +23480-123-4567').
+           
+        Format the output clearly using asterisks for emphasis and numbered lists. Do NOT include any introductory or concluding sentences outside the list itself.
+    `;
+
+    // Use Gemini with Search Grounding
+    const searchResults = await generateAIResponse(matchingPrompt, SYSTEM_INSTRUCTION);
+    
+    let reply = `🇳🇬 *Search Complete!* Based on your need for a *${category}* in *${user.city_initial || user.state_initial}* for ${user.budget_initial || 'a flexible price'}, here are 3 verified ${providerRole}s that match your request:\n\n`;
+    
+    reply += searchResults;
+    
+    reply += `\n\nTo view their full ${profileLinkType}s, click the links above. Which Helpa/Seller (1, 2, or 3) would you like to connect with for this job/purchase?`;
+
+    user.status = isService ? 'SERVICE_AWAIT_SELECTION' : 'BUYER_AWAIT_SELECTION';
+    await saveUser(user);
+    await sendMessage(senderId, reply);
 }
 
 // =========================================================================
@@ -368,7 +422,7 @@ async function handleMessageFlow(senderId, senderName, incomingText) {
 
         } 
         
-        // --- FLOW 1: SERVICE REQUEST ---
+        // --- FLOW 1: SERVICE REQUEST: ASK WHAT ---
         else if (user.status === 'SERVICE_ASK_WHAT') {
             
             const parsedData = await parseServiceRequest(incomingText);
@@ -383,12 +437,19 @@ async function handleMessageFlow(senderId, senderName, incomingText) {
             }
         } 
         
+        // --- FLOW 1: SERVICE REQUEST: CONFIRM DETAILS ---
         else if (user.status === 'SERVICE_CONFIRM_DETAILS') {
             if (lowerText.includes('yes') || lowerText.includes('yup') || lowerText.includes('correct')) {
                 // CONFIRMED: Move to the matching phase
                 user.status = 'SERVICE_MATCHING';
                 await saveUser(user);
-                replyText = await generateAIResponse(`The user confirmed the request: hiring a ${user.service_category} in ${user.city_initial}, ${user.state_initial} for ${user.budget_initial}. Respond excitedly (max 2 sentences) and let them know you are now searching for the best, verified professionals (Helpas) matching these criteria in the system.`);
+                // Send a quick acknowledgment before starting the long search process
+                await sendMessage(senderId, await generateAIResponse(`The user confirmed the request. Give a very quick, excited response (max 2 sentences) and tell them you are now searching for the top 3 verified professionals (Helpas) that match these criteria in Lagos/Oyo.`));
+                
+                // CRITICAL: Call the matching function
+                await handleMatching(user, senderId);
+                return; // Exit after handleMatching which sends the final reply
+
             } else {
                 // CORRECTION: Re-parse the input to update the details
                 const parsedData = await parseServiceRequest(incomingText);
@@ -403,8 +464,8 @@ async function handleMessageFlow(senderId, senderName, incomingText) {
                 }
             }
         }
-
-        // --- FLOW 2: ITEM PURCHASE ---
+        
+        // --- FLOW 2: ITEM PURCHASE: ASK WHAT ---
         else if (user.status === 'BUYER_ASK_ITEM') {
             
             const parsedData = await parseServiceRequest(incomingText);
@@ -416,15 +477,8 @@ async function handleMessageFlow(senderId, senderName, incomingText) {
                 // Save the parsed data for the item
                 user.item_name = parsedData.service_category; 
                 user.item_description = parsedData.description_summary;
-                user.city_initial = parsedData.extracted_city;
                 
-                let extractedState = parsedData.extracted_state.toLowerCase();
-                if (extractedState.includes('oyo')) {
-                    user.state_initial = 'Oyo';
-                } else {
-                    user.state_initial = 'Lagos'; // Default
-                }
-                user.budget_initial = parsedData.extracted_budget;
+                user = updateUserDetails(user, parsedData); // Uses the utility to handle location/budget
 
                 user.status = 'BUYER_CONFIRM_DETAILS';
                 await saveUser(user);
@@ -432,12 +486,19 @@ async function handleMessageFlow(senderId, senderName, incomingText) {
             }
         }
 
+        // --- FLOW 2: ITEM PURCHASE: CONFIRM DETAILS ---
         else if (user.status === 'BUYER_CONFIRM_DETAILS') {
             if (lowerText.includes('yes') || lowerText.includes('yup') || lowerText.includes('correct')) {
                 // CONFIRMED: Move to the matching phase
                 user.status = 'BUYER_MATCHING';
                 await saveUser(user);
-                replyText = await generateAIResponse(`The user confirmed the item request: buying a ${user.item_name} in ${user.city_initial}, ${user.state_initial} for ${user.budget_initial}. Respond excitedly (max 2 sentences) and let them know you are now searching for the best, verified sellers matching these criteria in the system.`);
+                // Send a quick acknowledgement before starting the long search process
+                await sendMessage(senderId, await generateAIResponse(`The user confirmed the item request. Give a very quick, excited response (max 2 sentences) and tell them you are now searching for the top 3 verified sellers that match these criteria in Lagos/Oyo.`));
+                
+                // CRITICAL: Call the matching function
+                await handleMatching(user, senderId);
+                return; // Exit after handleMatching which sends the final reply
+
             } else {
                 // CORRECTION: Re-parse the input to update the details
                 const parsedData = await parseServiceRequest(incomingText);
@@ -448,15 +509,8 @@ async function handleMessageFlow(senderId, senderName, incomingText) {
                     // Update the user details with the re-parsed data
                     user.item_name = parsedData.service_category; 
                     user.item_description = parsedData.description_summary;
-                    user.city_initial = parsedData.extracted_city;
                     
-                    let extractedState = parsedData.extracted_state.toLowerCase();
-                    if (extractedState.includes('oyo')) {
-                        user.state_initial = 'Oyo';
-                    } else {
-                        user.state_initial = 'Lagos'; // Default
-                    }
-                    user.budget_initial = parsedData.extracted_budget;
+                    user = updateUserDetails(user, parsedData); // Uses utility
 
                     // Stay in this state, and re-ask for confirmation with the new data
                     await saveUser(user); 
@@ -464,7 +518,22 @@ async function handleMessageFlow(senderId, senderName, incomingText) {
                 }
             }
         }
+        
+        // --- FLOW 1 & 2: AWAITING SELECTION ---
+        else if (user.status === 'SERVICE_AWAIT_SELECTION' || user.status === 'BUYER_AWAIT_SELECTION') {
+            const selection = parseInt(lowerText.match(/\d+/)?.[0]); // Extract the number
+            
+            if (selection >= 1 && selection <= 3) {
+                const type = user.current_flow === 'service_request' ? 'Helpa' : 'Seller';
+                user.status = 'MAIN_MENU'; // Move back to main menu
+                await saveUser(user);
+                
+                replyText = await generateAIResponse(`The user selected option ${selection} to connect with a ${type}. Generate a single, friendly sentence (max 2 sentences) that confirms the selection and instructs the user to *wait for a direct message* from the selected ${type} to finalize the transaction.`);
 
+            } else {
+                 replyText = "Please select the number (1, 2, or 3) of the Helpa/Seller you wish to connect with, or type *MENU* to start over.";
+            }
+        }
 
         // --- MAIN MENU ROUTER ---
         else if (user.status === 'MAIN_MENU' || user.status === 'AWAITING_FLOW_START') {
