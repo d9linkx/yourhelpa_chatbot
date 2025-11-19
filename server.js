@@ -19,7 +19,6 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const GEMINI_MODEL = 'gemini-2.5-flash-preview-09-2025';
 
 // --- GOOGLE APPS SCRIPT CONFIGURATION (UPDATED URL) ---
-// CRITICAL FIX: Using the URL provided by the user
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyayObttIKkjMFsem9SHGfSSft6-MTmI8rKRYyudCmaC_kPLTlLnRTdBw0TU_5RFShitA/exec'; 
 
 if (!VERIFY_TOKEN || !ACCESS_TOKEN || !PHONE_NUMBER_ID) {
@@ -97,7 +96,7 @@ async function saveUser(user) {
 }
 
 // =========================================================================
-// GEMINI AI INTEGRATION (Updated for Intent Detection and Structured Matching)
+// GEMINI AI INTEGRATION (Unchanged Logic)
 // =========================================================================
 
 const SYSTEM_INSTRUCTION = `
@@ -279,7 +278,7 @@ async function parseServiceRequest(requestText) {
 
 
 // =========================================================================
-// WHATSAPP INTERACTIVE MESSAGING FUNCTIONS
+// WHATSAPP INTERACTIVE MESSAGING FUNCTIONS (UPDATED FOR BUTTONS)
 // =========================================================================
 
 const META_API_URL = `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`;
@@ -310,52 +309,69 @@ async function sendWhatsAppMessage(to, messagePayload) {
 }
 
 /**
- * Generates the Main Menu as a WhatsApp Interactive List Message.
+ * Generates the Main Menu as a WhatsApp Interactive Button Message and List.
+ * This combines the most common options into buttons for speed.
  */
 function getMainMenu(role, senderName) {
-    // FIX: Shortened row titles to be <= 24 characters to prevent error 131009
-    const welcomeText = `🇳🇬 Welcome back, ${senderName}! We connect you to verified services and sellers in *Lagos* and *Oyo State*. How can I help you today? You can also just type what you need!`;
+    const welcomeText = `🇳🇬 Welcome back, *${senderName}*! What would you like to do?`;
     
-    const hireBuySection = {
-        title: "Find or Buy (Requester)",
-        rows: []
-    };
-    hireBuySection.rows.push({ id: "OPT_FIND_SERVICE", title: "1️⃣ Find a Service" }); // Shortened
-    hireBuySection.rows.push({ id: "OPT_BUY_ITEM", title: "2️⃣ Buy an Item" }); // Shortened
-
-    const offerSellSection = {
-        title: "Offer or Sell (Provider/Seller)",
-        rows: []
-    };
-    if (role !== 'helpa') { 
-        offerSellSection.rows.push({ id: "OPT_REGISTER_HELPA", title: "3️⃣ Register as Helpa" }); // Shortened
-    }
-    if (role !== 'seller') { 
-        offerSellSection.rows.push({ id: "OPT_LIST_ITEM", title: "4️⃣ List an Item" }); // Shortened
+    const buttons = [
+        { type: "reply", reply: { id: "OPT_FIND_SERVICE", title: "Hire a Professional" } },
+        { type: "reply", reply: { id: "OPT_BUY_ITEM", title: "Buy/Find an Item" } },
+    ];
+    
+    // Add provider options only if the role hasn't been assigned yet
+    if (role !== 'helpa' && role !== 'seller') {
+         buttons.push({ type: "reply", reply: { id: "OPT_REGISTER_ME", title: "Register to Sell/Offer" } });
     }
 
-    const accountSection = {
-        title: "Account & Support",
+    // List for secondary options (if buttons exceed 3 or for more detail)
+    const listSections = [{
+        title: "More Options",
         rows: [
-            { id: "OPT_MY_ACTIVE", title: "5️⃣ My Active Jobs" }, // Shortened
-            { id: "OPT_SUPPORT", title: "6️⃣ Support & Settings" } // Shortened
+            // If user is already a provider, they can still check status/support
+            { id: "OPT_MY_ACTIVE", title: "My Active Jobs/Listings" },
+            { id: "OPT_SUPPORT", title: "Support & Settings" }
         ]
-    };
+    }];
 
-    const sections = [hireBuySection, offerSellSection, accountSection].filter(sec => sec.rows.length > 0 && sec.rows.length <= 10);
-    
-    return {
-        type: "interactive",
-        interactive: {
-            type: "list",
-            header: { type: "text", text: "YourHelpa Main Menu" },
-            body: { text: welcomeText },
-            action: {
-                button: "View All Options",
-                sections: sections
+    // If there are 3 buttons, we send a button message. If we only have 2, we can combine with the list for a more complete menu.
+    if (buttons.length === 3) {
+        // Send a Button Message for the primary 3 options
+        return {
+            type: "interactive",
+            interactive: {
+                type: "button",
+                body: { text: welcomeText },
+                action: {
+                    buttons: buttons
+                },
+                footer: { text: "Or select a secondary option below." }
             }
-        }
-    };
+        };
+    } else {
+        // Send a List Message to combine primary and secondary options cleanly
+        const combinedSections = [{
+             title: "Quick Access",
+             rows: [
+                { id: "OPT_FIND_SERVICE", title: "Hire a Professional" },
+                { id: "OPT_BUY_ITEM", title: "Buy/Find an Item" }
+             ]
+        }, ...listSections];
+        
+        return {
+            type: "interactive",
+            interactive: {
+                type: "list",
+                header: { type: "text", text: "YourHelpa Main Menu" },
+                body: { text: welcomeText },
+                action: {
+                    button: "View Options",
+                    sections: combinedSections
+                }
+            }
+        };
+    }
 }
 
 /**
@@ -369,13 +385,35 @@ function getConfirmationButtons(bodyText, yesId, noId) {
             body: { text: bodyText },
             action: {
                 buttons: [
-                    { type: "reply", reply: { id: yesId, title: "✅ YES, Confirm" } },
-                    { type: "reply", reply: { id: noId, title: "❌ NO, Correct" } }
+                    { type: "reply", reply: { id: yesId, title: "✅ YES, Looks Good" } },
+                    { type: "reply", reply: { id: noId, title: "❌ NO, Correct It" } }
                 ]
             }
         }
     };
 }
+
+/**
+ * Generates a choice between Helpa (Service) and Seller (Item).
+ * @param {string} bodyText The prompt text.
+ */
+function getRegistrationChoiceButtons(bodyText) {
+    return {
+        type: "interactive",
+        interactive: {
+            type: "button",
+            body: { text: bodyText },
+            action: {
+                buttons: [
+                    { type: "reply", reply: { id: "OPT_REGISTER_HELPA", title: "Offer a Service (Helpa)" } },
+                    { type: "reply", reply: { id: "OPT_LIST_ITEM", title: "Sell an Item (Seller)" } },
+                    { type: "reply", reply: { id: "MENU", title: "⬅️ Back to Menu" } }
+                ]
+            }
+        }
+    };
+}
+
 
 /**
  * Fallback to sending a simple text message.
@@ -386,13 +424,12 @@ function sendTextMessage(to, text) {
 
 
 // =========================================================================
-// MATCHING LOGIC - IMPLEMENTING CAROUSEL ALTERNATIVE (List Message)
+// MATCHING LOGIC - IMPLEMENTING CAROUSEL ALTERNATIVE (List Message) (Unchanged)
 // =========================================================================
 
 /**
  * Handles the AI-powered matching process for services or items.
  * Uses a List Message to simulate a rich, scrollable carousel card view.
- * The Gemini prompt is STRICTLY forbidden from including phone numbers.
  */
 async function handleMatching(user, senderId) {
     const isService = user.current_flow === 'service_request';
@@ -503,7 +540,7 @@ async function handleMatching(user, senderId) {
 }
 
 // =========================================================================
-// MESSAGE ROUTER AND FLOW LOGIC (Refactored using AI Intent)
+// MESSAGE ROUTER AND FLOW LOGIC (Refactored to use buttons)
 // =========================================================================
 
 function updateUserDetails(user, parsedData) {
@@ -565,7 +602,7 @@ async function handleMessageFlow(senderId, senderName, message) {
         } 
         
         // --- 3. MAIN MENU ROUTING (Triggered by AI Intent) ---
-        else if (user.status === 'MAIN_MENU' || user.status === 'ONBOARDING_ROLE_ASKED') {
+        else if (user.status === 'MAIN_MENU' || user.status === 'ONBOARDING_ROLE_ASKED' || intent.startsWith('OPT_REGISTER_ME')) {
             
             switch (intent) {
                 // --- Requester Flows (Hire/Buy) ---
@@ -585,13 +622,20 @@ async function handleMessageFlow(senderId, senderName, message) {
                     return;
 
                 // --- Provider Flows (Helpa/Seller) ---
-                case 'OPT_REGISTER_HELPA':
-                    // ANTI-DUPLICATION CHECK: User is already registered as a Helpa or Seller
+                case 'OPT_REGISTER_ME':
                     if (user.role === 'helpa' || user.role === 'seller') {
-                        const message = await generateAIResponse(`The user is trying to register as a Helpa but their role is already set to ${user.role}. Respond with a polite, brief message (max 2 sentences) confirming their existing role and telling them to use option 6 (Support) to update their profile or list new services.`);
+                        const message = await generateAIResponse(`The user is trying to register, but their role is already set to ${user.role}. Respond with a polite, brief message (max 2 sentences) confirming their existing role and telling them to use option 6 (Support) to update their profile or list new services.`);
                         await sendTextMessage(senderId, message);
                         return;
                     }
+                    user.status = 'ASK_PROVIDER_TYPE';
+                    await saveUser(user);
+                    const regChoiceText = "Great! Do you want to *Offer a Service* (become a Helpa) or *Sell an Item* (become a Seller)?";
+                    const regChoicePayload = getRegistrationChoiceButtons(regChoiceText);
+                    await sendWhatsAppMessage(senderId, regChoicePayload);
+                    return;
+
+                case 'OPT_REGISTER_HELPA': // Triggered by the button in getRegistrationChoiceButtons
                     user.current_flow = 'helpa_registration';
                     user.status = 'HELPA_ASK_NAME';
                     user.role = 'helpa'; // Set role immediately
@@ -599,13 +643,8 @@ async function handleMessageFlow(senderId, senderName, message) {
                     const prompt3 = await generateAIResponse("The user is starting the 'Helpa Registration' flow for Lagos/Oyo. Ask them for their full name and city to begin registration.");
                     await sendTextMessage(senderId, prompt3);
                     return;
-                case 'OPT_LIST_ITEM':
-                    // ANTI-DUPLICATION CHECK: User is already registered as a Helpa or Seller
-                     if (user.role === 'helpa' || user.role === 'seller') {
-                        const message = await generateAIResponse(`The user is trying to list an item but their role is already set to ${user.role}. Respond with a polite, brief message (max 2 sentences) confirming their existing role and telling them to use option 6 (Support) to update their profile or list new items.`);
-                        await sendTextMessage(senderId, message);
-                        return;
-                    }
+                    
+                case 'OPT_LIST_ITEM': // Triggered by the button in getRegistrationChoiceButtons
                     user.current_flow = 'seller_registration';
                     user.status = 'SELLER_ASK_PRODUCT';
                     user.role = 'seller'; // Set role immediately
@@ -619,12 +658,12 @@ async function handleMessageFlow(senderId, senderName, message) {
                     await sendTextMessage(senderId, "The *My Active Jobs/Purchases* feature is under construction! Check back soon. Type MENU to return.");
                     return;
                 case 'OPT_SUPPORT':
-                    const prompt6 = await generateAIResponse("The user needs support. Acknowledge this and offer a way to contact a human admin using a mock email address: support@yourhelpa.com.");
-                    await sendTextMessage(senderId, prompt6);
+                    const prompt6 = await generateAIResponse("The user needs support. Acknowledge this and offer a way to contact a human admin using a mock email address: support@yourhelpa.com. Offer the MENU button.");
+                    await sendWhatsAppMessage(senderId, getConfirmationButtons("If you need to speak to an admin, please email support@yourhelpa.com.", "MENU", "MENU_IGNORED")); // Reuse button logic for simple options
                     return;
 
                 case 'UNKNOWN':
-                    const promptDefault = await generateAIResponse(`The user sent: "${incomingText}". They are at the Main Menu, and the input was unrecognized. Guide them back to choosing a numbered option from the menu, or just type what they need.`);
+                    const promptDefault = await generateAIResponse(`The user sent: "${incomingText}". They are at the Main Menu, and the input was unrecognized. Guide them back to choosing an option from the menu, or just type what they need.`);
                     await sendTextMessage(senderId, promptDefault);
                     return;
                 
@@ -634,7 +673,7 @@ async function handleMessageFlow(senderId, senderName, message) {
         
         // --- FLOW 1: SERVICE REQUEST: ASK WHAT ---
         else if (user.status === 'SERVICE_ASK_WHAT' && incomingText) {
-            
+            // ... (Logic to parse request and show confirmation buttons)
             const parsedData = await parseServiceRequest(incomingText);
 
             if (!parsedData) {
@@ -773,7 +812,7 @@ async function handleMessageFlow(senderId, senderName, message) {
                     await saveUser(user);
                     
                     const replyText = await generateAIResponse(`The user selected ${selectedMatch.name}. Generate a single, friendly sentence (max 2 sentences) that confirms the selection, and provide the contact information: Name: ${selectedMatch.name}, Title: ${selectedMatch.title}, and the final contact number for connection: ${mockPhoneNumber}.`);
-                    await sendTextMessage(senderId, replyText);
+                    await sendWhatsAppMessage(senderId, getConfirmationButtons(replyText, "MENU", "MENU_IGNORED"));
                     return;
                 }
             }
@@ -793,7 +832,7 @@ async function handleMessageFlow(senderId, senderName, message) {
             user.status = 'MAIN_MENU';
             await saveUser(user);
             const finalReply = await generateAIResponse(`The user completed Helpa registration with service: ${incomingText}. Give a warm confirmation (max 3 sentences), confirming their Helpa role and noting that their profile is under review for activation.`);
-            await sendTextMessage(senderId, finalReply);
+            await sendWhatsAppMessage(senderId, getConfirmationButtons(finalReply, "MENU", "MENU_IGNORED"));
         }
         // SELLER REGISTRATION (Simplified for now)
         else if (user.status === 'SELLER_ASK_PRODUCT' && incomingText) {
@@ -801,7 +840,7 @@ async function handleMessageFlow(senderId, senderName, message) {
             user.status = 'MAIN_MENU';
             await saveUser(user);
             const finalReply = await generateAIResponse(`The user completed Seller registration with item: ${incomingText}. Give a warm confirmation (max 3 sentences), confirming their Seller role and noting that their product listing is pending review.`);
-            await sendTextMessage(senderId, finalReply);
+             await sendWhatsAppMessage(senderId, getConfirmationButtons(finalReply, "MENU", "MENU_IGNORED"));
         }
         
         // --- DEFAULT FALLBACK ---
@@ -875,5 +914,5 @@ app.post('/webhook', (req, res) => {
 app.listen(PORT, () => {
     console.log(`\nYourHelpa Server is listening on port ${PORT}`);
     console.log(`Webhook URL: https://yourhelpa-chatbot.onrender.com/webhook`);
-    console.log("✅ AI Intent Detection and List UI Enabled.");
+    console.log("✅ AI Intent Detection and Button UI Enabled.");
 });
