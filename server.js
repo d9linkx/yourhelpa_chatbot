@@ -18,8 +18,8 @@ const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || ""; 
 const GEMINI_MODEL = 'gemini-2.5-flash-preview-09-2025';
 
-// --- GOOGLE APPS SCRIPT CONFIGURATION ---
-const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycby8gGXRYTiRjWcPZbu0gcTEb0KPoskQlPKbEnphtvPysZYcnyX4_KcGcXJy6g0h2ndM_g/exec'; 
+// --- GOOGLE APPS SCRIPT CONFIGURATION (UPDATED URL) ---
+const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyayObttIKkjMFsem9SHGfSSft6-MTmI8rKRYyudCmaC_kPLTlLnRTdBw0TU_5RFShitA/exec'; 
 
 if (!VERIFY_TOKEN || !ACCESS_TOKEN || !PHONE_NUMBER_ID) {
     console.error("CRITICAL ERROR: WhatsApp environment variables are missing.");
@@ -27,7 +27,7 @@ if (!VERIFY_TOKEN || !ACCESS_TOKEN || !PHONE_NUMBER_ID) {
 }
 
 // =========================================================================
-// GOOGLE APPS SCRIPT & USER STATE MANAGEMENT (unchanged)
+// GOOGLE APPS SCRIPT & USER STATE MANAGEMENT
 // =========================================================================
 
 /**
@@ -238,7 +238,7 @@ async function generateAIResponse(text, systemPrompt = SYSTEM_INSTRUCTION) {
  */
 async function parseServiceRequest(requestText) {
     if (!GEMINI_API_KEY) return null;
-    // ... (Parsing logic remains the same) ...
+    
     const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
     
     const parsingInstruction = `
@@ -312,7 +312,6 @@ async function sendWhatsAppMessage(to, messagePayload) {
  * Generates the Main Menu as a WhatsApp Interactive List Message.
  */
 function getMainMenu(role, senderName) {
-    // ... (Menu structure remains the same) ...
     const welcomeText = `🇳🇬 Welcome back, ${senderName}! We connect you to verified services and sellers in *Lagos* and *Oyo State*. How can I help you today? You can also just type what you need!`;
     
     const hireBuySection = {
@@ -454,7 +453,15 @@ async function handleMatching(user, senderId) {
 
     try {
         const jsonString = searchResponse.data.candidates?.[0]?.content?.parts?.[0]?.text;
-        matches = JSON.parse(jsonString).matches;
+        
+        // Ensure the mock_id is always present for the next step (simulating phone number retrieval)
+        let parsedMatches = JSON.parse(jsonString).matches;
+        matches = parsedMatches.map((match, index) => ({
+            ...match,
+            // Simulating a unique ID that would map to a real phone number in a database
+            mock_id: match.mock_id || `MOCK_PH_${isService ? 'H' : 'S'}${index + 1}` 
+        }));
+
     } catch (e) {
         console.error("Failed to parse matches from Gemini:", e.message);
         await sendTextMessage(senderId, "Sorry, I couldn't generate the matches right now. Please try your request again.");
@@ -473,7 +480,7 @@ async function handleMatching(user, senderId) {
 
     const replyText = `🇳🇬 *Matches Found!* Here are 3 verified ${providerRole}s for your request. Scroll through the options below to see their profile details and select who you want to connect with.`;
     
-    // Save the generated matches (including phone numbers if they were real, but here we save the name/title)
+    // Save the generated matches (the full list)
     user.match_data = JSON.stringify(matches);
     user.status = isService ? 'SERVICE_AWAIT_SELECTION' : 'BUYER_AWAIT_SELECTION';
     await saveUser(user);
@@ -498,7 +505,6 @@ async function handleMatching(user, senderId) {
 // =========================================================================
 
 function updateUserDetails(user, parsedData) {
-    // ... (unchanged) ...
     user.service_category = parsedData.service_category;
     user.description_summary = parsedData.description_summary;
     user.city_initial = parsedData.extracted_city;
@@ -514,7 +520,6 @@ function updateUserDetails(user, parsedData) {
 }
 
 function buildConfirmationMessage(user, type = 'service') {
-    // ... (unchanged) ...
     const category = type === 'service' ? user.service_category : user.item_name;
     const summary = type === 'service' ? user.description_summary : user.item_description;
     const budgetDisplay = user.budget_initial || "₦XXXX";
@@ -631,7 +636,7 @@ async function handleMessageFlow(senderId, senderName, message) {
             const parsedData = await parseServiceRequest(incomingText);
 
             if (!parsedData) {
-                const retryText = "I had trouble understanding that. Could you please describe the service you need again? E.g., 'Need a competent tailor in Ibadan to make an outfit for ₦15,000.'";
+                const retryText = "I had trouble understanding that. Could you please describe the service you need again? E.g., 'A plumber in Ibadan to fix a leaking pipe for ₦15,000.'";
                 await sendTextMessage(senderId, retryText);
             } else {
                 user = updateUserDetails(user, parsedData);
@@ -644,49 +649,107 @@ async function handleMessageFlow(senderId, senderName, message) {
             }
         } 
         
-        // --- FLOW 1: SERVICE REQUEST: CONFIRM DETAILS ---
-        else if (user.status === 'SERVICE_CONFIRM_DETAILS') {
+        // --- FLOW 2: BUYER REQUEST: ASK WHAT ---
+         else if (user.status === 'BUYER_ASK_ITEM' && incomingText) {
             
-            if (intent === 'CONFIRM_SERVICE' || lowerText.includes('yes')) {
-                // CONFIRMED: Move to the matching phase
-                user.status = 'SERVICE_MATCHING';
+            // Re-use the service parser for item details
+            const parsedData = await parseServiceRequest(incomingText);
+
+            if (!parsedData) {
+                const retryText = "I had trouble understanding that. Could you please describe the item you want to buy again? E.g., 'Looking for a clean, used iPhone 12 in Lagos, budget ₦250,000.'";
+                await sendTextMessage(senderId, retryText);
+            } else {
+                user.item_name = parsedData.service_category; // Use category as item name
+                user.item_description = parsedData.description_summary; // Use summary as item description
+                user.city_initial = parsedData.extracted_city;
+
+                let extractedState = parsedData.extracted_state.toLowerCase();
+                if (extractedState.includes('oyo')) {
+                    user.state_initial = 'Oyo';
+                } else {
+                    user.state_initial = 'Lagos'; // Default
+                }
+                user.budget_initial = parsedData.extracted_budget;
+                
+                user.status = 'BUYER_CONFIRM_DETAILS'; 
                 await saveUser(user);
-                await sendTextMessage(senderId, await generateAIResponse(`The user confirmed the request. Give a very quick, excited response (max 2 sentences) and tell them you are now searching for the top 3 verified professionals (Helpas) that match these criteria in Lagos/Oyo.`));
+                
+                const bodyText = buildConfirmationMessage(user, 'item');
+                const confirmationPayload = getConfirmationButtons(bodyText, "CONFIRM_ITEM", "CORRECT_ITEM");
+                await sendWhatsAppMessage(senderId, confirmationPayload);
+            }
+        } 
+        
+        // --- FLOW 1 & 2: CONFIRM DETAILS ---
+        else if (user.status.includes('CONFIRM_DETAILS')) {
+            const flowType = user.current_flow;
+            const isService = flowType === 'service_request';
+            const confirmId = isService ? 'CONFIRM_SERVICE' : 'CONFIRM_ITEM';
+            const correctId = isService ? 'CORRECT_SERVICE' : 'CORRECT_ITEM';
+            const matchStatus = isService ? 'SERVICE_MATCHING' : 'BUYER_MATCHING';
+            const correctingStatus = isService ? 'SERVICE_CORRECTING' : 'BUYER_CORRECTING';
+
+            if (intent === confirmId || lowerText.includes('yes')) {
+                // CONFIRMED: Move to the matching phase
+                user.status = matchStatus;
+                await saveUser(user);
+                
+                const matchType = isService ? 'professionals (Helpas)' : 'sellers';
+                await sendTextMessage(senderId, await generateAIResponse(`The user confirmed the request. Give a very quick, excited response (max 2 sentences) and tell them you are now searching for the top 3 verified ${matchType} that match these criteria in Lagos/Oyo.`));
                 
                 await handleMatching(user, senderId);
                 return; 
 
-            } else if (intent === 'CORRECT_SERVICE' || lowerText.includes('no')) {
+            } else if (intent === correctId || lowerText.includes('no')) {
                 // CORRECTION: Ask for the correction
-                user.status = 'SERVICE_CORRECTING';
+                user.status = correctingStatus;
                 await saveUser(user); 
-                const correctionPrompt = "No problem! Please send me the correct details for the job (e.g., 'Change the budget to ₦20,000' or 'It's actually in Lekki, Lagos').";
+                const correctionPrompt = "No problem! Please send me the correct details for the request (e.g., 'Change the budget to ₦20,000' or 'It's actually in Lekki, Lagos').";
                 await sendTextMessage(senderId, correctionPrompt);
                 
-            } else if (user.status === 'SERVICE_CORRECTING' && incomingText) {
-                 // PROCESS CORRECTION
-                const parsedData = await parseServiceRequest(incomingText);
-
-                if (!parsedData) {
-                    const retryText = "Sorry, I still didn't get a clear correction. Please send a clear correction (e.g., 'Change the budget to ₦20,000').";
-                    await sendTextMessage(senderId, retryText);
-                } else {
-                    user = updateUserDetails(user, parsedData);
-                    user.status = 'SERVICE_CONFIRM_DETAILS'; // Go back to confirmation state
-                    await saveUser(user); 
-                    
-                    const bodyText = buildConfirmationMessage(user, 'service');
-                    const confirmationPayload = getConfirmationButtons(bodyText, "CONFIRM_SERVICE", "CORRECT_SERVICE");
-                    await sendWhatsAppMessage(senderId, confirmationPayload);
-                }
             } else {
                 // User typed something unexpected when expecting a button click
-                const retryText = "Please either click the *YES, Confirm* or *NO, Correct* button to proceed with the service request, or type MENU.";
+                const retryText = `Please either click the *YES, Confirm* or *NO, Correct* button to proceed with your request, or type MENU.`;
                 await sendTextMessage(senderId, retryText);
             }
         }
         
-        // --- FLOW 1 & 2: AWAITING SELECTION ---
+        // --- FLOW 1 & 2: CORRECTION PROCESSING ---
+        else if (user.status.includes('CORRECTING') && incomingText) {
+            const flowType = user.current_flow;
+            const isService = flowType === 'service_request';
+            const confirmStatus = isService ? 'SERVICE_CONFIRM_DETAILS' : 'BUYER_CONFIRM_DETAILS';
+            const confirmId = isService ? 'CONFIRM_SERVICE' : 'CONFIRM_ITEM';
+            const correctId = isService ? 'CORRECT_SERVICE' : 'CORRECT_ITEM';
+            const type = isService ? 'service' : 'item';
+
+            const parsedData = await parseServiceRequest(incomingText);
+
+            if (!parsedData) {
+                const retryText = "Sorry, I still didn't get a clear correction. Please send a clear correction (e.g., 'Change the budget to ₦20,000').";
+                await sendTextMessage(senderId, retryText);
+            } else {
+                if (isService) {
+                    user = updateUserDetails(user, parsedData);
+                } else {
+                    // Update buyer details based on correction parse
+                    user.item_name = parsedData.service_category; 
+                    user.item_description = parsedData.description_summary;
+                    user.city_initial = parsedData.extracted_city;
+                    user.state_initial = parsedData.extracted_state.toLowerCase().includes('oyo') ? 'Oyo' : 'Lagos';
+                    user.budget_initial = parsedData.extracted_budget;
+                }
+                
+                user.status = confirmStatus; // Go back to confirmation state
+                await saveUser(user); 
+                
+                const bodyText = buildConfirmationMessage(user, type);
+                const confirmationPayload = getConfirmationButtons(bodyText, confirmId, correctId);
+                await sendWhatsAppMessage(senderId, confirmationPayload);
+            }
+        }
+        
+        // --- FLOW 1 & 2: AWAITING SELECTION (After Matching) ---
         else if (user.status.includes('AWAIT_SELECTION')) {
             const type = user.current_flow === 'service_request' ? 'Helpa' : 'Seller';
             
@@ -700,7 +763,9 @@ async function handleMessageFlow(senderId, senderName, message) {
                     
                     // --- REVEAL CONTACT DETAILS (Simulated) ---
                     // Since we didn't generate a real phone number in the prompt, we simulate one for the final connection.
-                    const mockPhoneNumber = selectedMatch.mock_id || "+2348101234567"; // Use the mock_id field if available, otherwise default
+                    // We use a predictable, realistic-looking mock number based on the match name
+                    const nameHash = selectedMatch.name.replace(/[^a-zA-Z]/g, '').toUpperCase();
+                    const mockPhoneNumber = `+23481${(Math.random() * 10000000).toFixed(0).padStart(7, '0')}`;
                     
                     user.status = 'MAIN_MENU'; 
                     await saveUser(user);
