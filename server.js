@@ -19,7 +19,7 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const GEMINI_MODEL = 'gemini-2.5-flash-preview-09-2025';
 
 // --- GOOGLE APPS SCRIPT CONFIGURATION (UPDATED URL) ---
-const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyayObttIKkjMFsem9SHGfSSft6-MTmI8rKRYyudCmaC_kPLTlLnRTdBw0TU_5RFShitA/exec'; 
+const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyayObttIKkjMFsem9SHGfSSft6-MTmI8rRRYyudCmaC_kPLTlLnRTdBw0TU_5RFShitA/exec'; 
 
 if (!VERIFY_TOKEN || !ACCESS_TOKEN || !PHONE_NUMBER_ID) {
     console.error("CRITICAL ERROR: WhatsApp environment variables are missing.");
@@ -183,7 +183,8 @@ async function getAIIntent(input, role) {
 
     const payload = {
         contents: [{ parts: [{ text: parsingInstruction }] }],
-        config: {
+        // FIX: Changed 'config' to 'generationConfig' to match the Gemini API schema.
+        generationConfig: { 
             responseMimeType: "application/json",
             responseSchema: INTENT_SCHEMA,
         },
@@ -251,7 +252,8 @@ async function parseServiceRequest(requestText) {
     const payload = {
         contents: [{ parts: [{ text: parsingInstruction }] }],
         tools: [{ "google_search": {} }], 
-        config: {
+        // FIX: Changed 'config' to 'generationConfig' to match the Gemini API schema.
+        generationConfig: { 
             responseMimeType: "application/json",
             responseSchema: SERVICE_REQUEST_SCHEMA,
         },
@@ -312,31 +314,32 @@ async function sendWhatsAppMessage(to, messagePayload) {
  * Generates the Main Menu as a WhatsApp Interactive List Message.
  */
 function getMainMenu(role, senderName) {
+    // FIX: Shortened row titles to be <= 24 characters to prevent error 131009
     const welcomeText = `🇳🇬 Welcome back, ${senderName}! We connect you to verified services and sellers in *Lagos* and *Oyo State*. How can I help you today? You can also just type what you need!`;
     
     const hireBuySection = {
         title: "Find or Buy (Requester)",
         rows: []
     };
-    hireBuySection.rows.push({ id: "OPT_FIND_SERVICE", title: "1️⃣ Find a professional (Hire Service)" });
-    hireBuySection.rows.push({ id: "OPT_BUY_ITEM", title: "2️⃣ Buy an item (Purchase Product)" });
+    hireBuySection.rows.push({ id: "OPT_FIND_SERVICE", title: "1️⃣ Find a Service" }); // Shortened
+    hireBuySection.rows.push({ id: "OPT_BUY_ITEM", title: "2️⃣ Buy an Item" }); // Shortened
 
     const offerSellSection = {
         title: "Offer or Sell (Provider/Seller)",
         rows: []
     };
-    if (role !== 'helpa') { // Only show registration if not already a Helpa
-        offerSellSection.rows.push({ id: "OPT_REGISTER_HELPA", title: "3️⃣ Register as a Helpa (Offer Service)" });
+    if (role !== 'helpa') { 
+        offerSellSection.rows.push({ id: "OPT_REGISTER_HELPA", title: "3️⃣ Register as Helpa" }); // Shortened
     }
-    if (role !== 'seller') { // Only show listing if not already a Seller
-        offerSellSection.rows.push({ id: "OPT_LIST_ITEM", title: "4️⃣ List items for sale (Seller)" });
+    if (role !== 'seller') { 
+        offerSellSection.rows.push({ id: "OPT_LIST_ITEM", title: "4️⃣ List an Item" }); // Shortened
     }
 
     const accountSection = {
         title: "Account & Support",
         rows: [
-            { id: "OPT_MY_ACTIVE", title: "5️⃣ My Active Jobs/Purchases" },
-            { id: "OPT_SUPPORT", title: "6️⃣ Support / Update Profile" }
+            { id: "OPT_MY_ACTIVE", title: "5️⃣ My Active Jobs" }, // Shortened
+            { id: "OPT_SUPPORT", title: "6️⃣ Support & Settings" } // Shortened
         ]
     };
 
@@ -445,7 +448,7 @@ async function handleMatching(user, senderId) {
     let searchResponse = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`, {
         contents: [{ parts: [{ text: matchingPrompt }] }],
         tools: [{ "google_search": {} }], 
-        config: {
+        generationConfig: {
             responseMimeType: "application/json",
             responseSchema: MATCHING_SCHEMA,
         },
