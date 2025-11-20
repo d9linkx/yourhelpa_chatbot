@@ -153,17 +153,17 @@ const INTENT_SCHEMA = {
 /**
  * Uses Gemini to detect the user's intent from their text input.
  * NOTE: The 'tools' property is intentionally omitted here as it conflicts with JSON schema output.
- * @param {string} input The user's typed text or interactive button/list ID.
+ * @param {string} input The user's typed text or interactive button/list ID (received in UPPERCASE).
  * @param {string} role The user's current role ('hire', 'helpa', 'seller').
  * @returns {Promise<string>} The standardized intent ID (e.g., 'OPT_FIND_SERVICE').
  */
 async function getAIIntent(input, role) {
     if (!GEMINI_API_KEY) return 'UNKNOWN';
     
-    // Check for explicit IDs/Keywords first to save an API call
+    // FIX 1: Check for explicit IDs/Keywords in UPPERCASE since input is passed in UPPERCASE
     if (input.startsWith('OPT_') || input.startsWith('CONFIRM_') || input.startsWith('CORRECT_') || input.startsWith('SELECT_')) return input;
-    if (input === 'MENU' || input === 'hi' || input === 'hello' || input === 'back') return 'MENU';
-    
+    if (input === 'MENU' || input === 'HI' || input === 'HELLO' || input === 'BACK' || input === '1' || input === '2' || input === '3') return 'MENU'; // Added 1, 2, 3 as shortcut
+
     const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
     
     const parsingInstruction = `
@@ -236,7 +236,8 @@ async function generateAIResponse(text, systemPrompt = SYSTEM_INSTRUCTION) {
 }
 
 /**
- * Calls the Gemini API for structured output (JSON) with Google Search Grounding for parsing requests.
+ * Calls the Gemini API for structured output (JSON) for parsing requests.
+ * FIX 2: Removed 'tools' property to resolve the 400 error.
  */
 async function parseServiceRequest(requestText) {
     if (!GEMINI_API_KEY) return null;
@@ -252,7 +253,7 @@ async function parseServiceRequest(requestText) {
 
     const payload = {
         contents: [{ parts: [{ text: parsingInstruction }] }],
-        tools: [{ "google_search": {} }], 
+        // FIX 2: The 'tools' property has been removed from this function to allow JSON schema to work.
         generationConfig: {
             responseMimeType: "application/json",
             responseSchema: SERVICE_REQUEST_SCHEMA,
@@ -280,7 +281,7 @@ async function parseServiceRequest(requestText) {
 
 
 // =========================================================================
-// WHATSAPP INTERACTIVE MESSAGING FUNCTIONS (UPDATED FOR BUTTON LENGTHS)
+// WHATSAPP INTERACTIVE MESSAGING FUNCTIONS 
 // =========================================================================
 
 const META_API_URL = `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`;
@@ -448,7 +449,7 @@ async function handleMatching(user, senderId) {
     const matchingPrompt = `
         You are a Nigerian Market Intelligence Engine for YourHelpa. The user needs help with a ${flowType}.
         
-        Goal: Find 3 top-rated, *mock* ${providerRole}s in Nigeria that match the user's request, focusing on Lagos and Oyo states.
+        Goal: Find 3 top-rated, *mock* ${providerRole}s that match the user's request.
         
         User Request:
         - Category: ${category}
@@ -457,9 +458,8 @@ async function handleMatching(user, senderId) {
         - Budget: ${user.budget_initial || 'Flexible'}
 
         Task:
-        1. Use Google Search grounding to simulate finding relevant Nigerian market businesses, popular services, and product examples within the Lagos/Oyo area.
-        2. Generate a JSON object listing exactly *three* potential ${providerRole} matches.
-        3. For each match, provide:
+        1. Generate a JSON object listing exactly *three* potential ${providerRole} matches.
+        2. For each match, provide:
            - A Nigerian **Name** (e.g., 'Ayo's Auto Services').
            - A **Title/Category** (e.g., 'Master Plumber' or 'Custom Cake Vendor').
            - A **Detailed Description** (3-4 sentences describing their pricing, services offered, verified rating, and portfolio link - max 80 characters for the description).
@@ -487,9 +487,10 @@ async function handleMatching(user, senderId) {
     };
 
     let matches = [];
+    // Note: We use the non-grounded endpoint for the structured output to avoid the 400 error.
     let searchResponse = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`, {
         contents: [{ parts: [{ text: matchingPrompt }] }],
-        tools: [{ "google_search": {} }], 
+        // tools: [{ "google_search": {} }], // Removed for JSON compatibility
         generationConfig: {
             responseMimeType: "application/json",
             responseSchema: MATCHING_SCHEMA,
@@ -595,6 +596,7 @@ async function handleMessageFlow(senderId, senderName, message) {
         let flowInput = interactiveId || lowerText;
 
         // --- 1. INTENT DETECTION ---
+        // Flow input is converted to UPPERCASE for internal ID/keyword checking
         const intent = await getAIIntent(flowInput.toUpperCase(), user.role); 
         console.log(`[Flow] Detected Intent: ${intent} | Current Status: ${user.status}`);
 
@@ -665,7 +667,7 @@ async function handleMessageFlow(senderId, senderName, message) {
                     return;
                 case 'OPT_SUPPORT':
                     const prompt6 = await generateAIResponse("The user needs support. Acknowledge this and offer a way to contact a human admin using a mock email address: support@yourhelpa.com. Offer the MENU button.");
-                    await sendWhatsAppMessage(senderId, getConfirmationButtons("If you need to speak to an admin, please email support@yourhelpa.com.", "MENU", "MENU_IGNORED")); // Reuse button logic for simple options
+                    await sendWhatsAppMessage(senderId, getConfirmationButtons(prompt6, "MENU", "MENU_IGNORED")); // Reuse button logic for simple options
                     return;
 
                 case 'UNKNOWN':
@@ -811,7 +813,6 @@ async function handleMessageFlow(senderId, senderName, message) {
                     // --- REVEAL CONTACT DETAILS (Simulated) ---
                     // Since we didn't generate a real phone number in the prompt, we simulate one for the final connection.
                     // We use a predictable, realistic-looking mock number based on the match name
-                    const nameHash = selectedMatch.name.replace(/[^a-zA-Z]/g, '').toUpperCase();
                     const mockPhoneNumber = `+23481${(Math.random() * 10000000).toFixed(0).padStart(7, '0')}`;
                     
                     user.status = 'MAIN_MENU'; 
