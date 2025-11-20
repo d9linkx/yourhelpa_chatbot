@@ -96,7 +96,7 @@ async function saveUser(user) {
 }
 
 // =========================================================================
-// GEMINI AI INTEGRATION (Unchanged Logic)
+// GEMINI AI INTEGRATION 
 // =========================================================================
 
 const SYSTEM_INSTRUCTION = `
@@ -152,6 +152,7 @@ const INTENT_SCHEMA = {
 
 /**
  * Uses Gemini to detect the user's intent from their text input.
+ * NOTE: The 'tools' property is intentionally omitted here as it conflicts with JSON schema output.
  * @param {string} input The user's typed text or interactive button/list ID.
  * @param {string} role The user's current role ('hire', 'helpa', 'seller').
  * @returns {Promise<string>} The standardized intent ID (e.g., 'OPT_FIND_SERVICE').
@@ -187,8 +188,7 @@ async function getAIIntent(input, role) {
             responseMimeType: "application/json",
             responseSchema: INTENT_SCHEMA,
         },
-        // The 'tools' property has been removed from this Intent Detection function
-        // because it is incompatible with requesting a JSON response schema.
+        // IMPORTANT: The 'tools' property is REMOVED here to fix the 400 error.
     };
 
     try {
@@ -253,7 +253,7 @@ async function parseServiceRequest(requestText) {
     const payload = {
         contents: [{ parts: [{ text: parsingInstruction }] }],
         tools: [{ "google_search": {} }], 
-        generationConfig: { 
+        generationConfig: {
             responseMimeType: "application/json",
             responseSchema: SERVICE_REQUEST_SCHEMA,
         },
@@ -280,7 +280,7 @@ async function parseServiceRequest(requestText) {
 
 
 // =========================================================================
-// WHATSAPP INTERACTIVE MESSAGING FUNCTIONS (UPDATED FOR BUTTONS)
+// WHATSAPP INTERACTIVE MESSAGING FUNCTIONS (UPDATED FOR BUTTON LENGTHS)
 // =========================================================================
 
 const META_API_URL = `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`;
@@ -312,32 +312,32 @@ async function sendWhatsAppMessage(to, messagePayload) {
 
 /**
  * Generates the Main Menu as a WhatsApp Interactive Button Message and List.
- * This combines the most common options into buttons for speed.
+ * FIX: All button titles are now 20 characters maximum.
  */
 function getMainMenu(role, senderName) {
     const welcomeText = `🇳🇬 Welcome back, *${senderName}*! What would you like to do?`;
     
     const buttons = [
-        { type: "reply", reply: { id: "OPT_FIND_SERVICE", title: "Hire a Professional" } },
-        { type: "reply", reply: { id: "OPT_BUY_ITEM", title: "Buy/Find an Item" } },
+        // 20 CHARACTERS MAX
+        { type: "reply", reply: { id: "OPT_FIND_SERVICE", title: "Hire a Professional" } }, // 20 chars
+        { type: "reply", reply: { id: "OPT_BUY_ITEM", title: "Buy/Find an Item" } },         // 18 chars
     ];
     
     // Add provider options only if the role hasn't been assigned yet
     if (role !== 'helpa' && role !== 'seller') {
-         buttons.push({ type: "reply", reply: { id: "OPT_REGISTER_ME", title: "Register to Sell/Offer" } });
+         // FIX: Shortened from "Register to Sell/Offer" (24 chars)
+         buttons.push({ type: "reply", reply: { id: "OPT_REGISTER_ME", title: "Register as Provider" } }); // 20 chars
     }
 
-    // List for secondary options (if buttons exceed 3 or for more detail)
+    // List for secondary options 
     const listSections = [{
         title: "More Options",
         rows: [
-            // If user is already a provider, they can still check status/support
             { id: "OPT_MY_ACTIVE", title: "My Active Jobs/Listings" },
             { id: "OPT_SUPPORT", title: "Support & Settings" }
         ]
     }];
 
-    // If there are 3 buttons, we send a button message. If we only have 2, we can combine with the list for a more complete menu.
     if (buttons.length === 3) {
         // Send a Button Message for the primary 3 options
         return {
@@ -386,6 +386,7 @@ function getConfirmationButtons(bodyText, yesId, noId) {
             type: "button",
             body: { text: bodyText },
             action: {
+                // Titles are <= 20 chars: "✅ YES, Looks Good" (19 chars), "❌ NO, Correct It" (17 chars)
                 buttons: [
                     { type: "reply", reply: { id: yesId, title: "✅ YES, Looks Good" } },
                     { type: "reply", reply: { id: noId, title: "❌ NO, Correct It" } }
@@ -397,6 +398,7 @@ function getConfirmationButtons(bodyText, yesId, noId) {
 
 /**
  * Generates a choice between Helpa (Service) and Seller (Item).
+ * FIX: Button titles are now 20 characters maximum.
  * @param {string} bodyText The prompt text.
  */
 function getRegistrationChoiceButtons(bodyText) {
@@ -407,9 +409,11 @@ function getRegistrationChoiceButtons(bodyText) {
             body: { text: bodyText },
             action: {
                 buttons: [
-                    { type: "reply", reply: { id: "OPT_REGISTER_HELPA", title: "Offer a Service (Helpa)" } },
-                    { type: "reply", reply: { id: "OPT_LIST_ITEM", title: "Sell an Item (Seller)" } },
-                    { type: "reply", reply: { id: "MENU", title: "⬅️ Back to Menu" } }
+                    // FIX: Shortened from "Offer a Service (Helpa)" (23 chars)
+                    { type: "reply", reply: { id: "OPT_REGISTER_HELPA", title: "Offer a Service" } }, // 17 chars
+                    // FIX: Shortened from "Sell an Item (Seller)" (21 chars)
+                    { type: "reply", reply: { id: "OPT_LIST_ITEM", title: "Sell an Item" } },           // 12 chars
+                    { type: "reply", reply: { id: "MENU", title: "⬅️ Back to Menu" } }                  // 15 chars
                 ]
             }
         }
@@ -426,7 +430,7 @@ function sendTextMessage(to, text) {
 
 
 // =========================================================================
-// MATCHING LOGIC - IMPLEMENTING CAROUSEL ALTERNATIVE (List Message) (Unchanged)
+// MATCHING LOGIC - IMPLEMENTING CAROUSEL ALTERNATIVE (List Message) 
 // =========================================================================
 
 /**
@@ -542,7 +546,7 @@ async function handleMatching(user, senderId) {
 }
 
 // =========================================================================
-// MESSAGE ROUTER AND FLOW LOGIC (Refactored to use buttons)
+// MESSAGE ROUTER AND FLOW LOGIC
 // =========================================================================
 
 function updateUserDetails(user, parsedData) {
@@ -862,7 +866,7 @@ async function handleMessageFlow(senderId, senderName, message) {
 
 
 // =========================================================================
-// EXPRESS SERVER SETUP (unchanged)
+// EXPRESS SERVER SETUP 
 // =========================================================================
 
 app.use(bodyParser.json());
