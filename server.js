@@ -187,6 +187,8 @@ async function getAIIntent(input, role) {
             responseMimeType: "application/json",
             responseSchema: INTENT_SCHEMA,
         },
+        // The 'tools' property has been removed from this Intent Detection function
+        // because it is incompatible with requesting a JSON response schema.
     };
 
     try {
