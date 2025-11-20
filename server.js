@@ -19,11 +19,47 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const GEMINI_MODEL = 'gemini-2.5-flash-preview-09-2025';
 
 // --- GOOGLE APPS SCRIPT CONFIGURATION (UPDATED URL) ---
-const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyayObttIKkjMFsem9SHGfSSft6-MTmI8rKRYyudCmaC_kPLTlLnRTdBw0TU_5RFShitA/exec'; 
+const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyayObttIKkjMFsem9SHQGfSSft6-MTmI8rKRYyudCmaC_kPLTlLnRTdBw0TU_5RFShitA/exec'; // Using the placeholder URL as before
 
 if (!VERIFY_TOKEN || !ACCESS_TOKEN || !PHONE_NUMBER_ID) {
     console.error("CRITICAL ERROR: WhatsApp environment variables are missing.");
     process.exit(1); 
+}
+
+// =========================================================================
+// PERSONA & RICH MEDIA CONFIGURATION
+// =========================================================================
+
+const PERSONAS = {
+    LILY: {
+        name: "Lily",
+        tone: "friendly, enthusiastic, highly empathetic, and uses Nigerian English expressions appropriately.",
+        avatar_url: "https://placehold.co/600x400/ff69b4/ffffff?text=Lily+-+YourHelpa+AI",
+        role_description: "Female AI Helper",
+    },
+    KORE: {
+        name: "Kore",
+        tone: "calm, assertive, concise, highly professional, and provides direct action-oriented guidance.",
+        avatar_url: "https://placehold.co/600x400/007bff/ffffff?text=Kore+-+YourHelpa+AI",
+        role_description: "Masculine AI Helper",
+    }
+};
+
+/**
+ * Generates the dynamic system instruction for the AI model based on the chosen persona.
+ */
+function getSystemInstruction(personaName) {
+    const persona = PERSONAS[personaName.toUpperCase()] || PERSONAS.LILY;
+    
+    return `
+        You are ${persona.name}, a WhatsApp-based conversational marketplace operating exclusively in **Nigeria**, currently serving users in **Lagos State** and **Oyo State**.
+        Your persona is: ${persona.tone}.
+        Your primary goal is to facilitate simple and safe transactions for both **Services (Hiring)** and **Items (Buying/Selling)**.
+        You must be concise and action-oriented.
+        
+        **CRITICAL RULE (No Silence Policy):** If a feature is unavailable, or a request cannot be processed, **you must never stay silent**. Instead, provide a friendly explanation about why the request failed or what is missing, and guide the user back to the main menu or a clear action.
+        All location references must prioritize Lagos or Oyo State.
+    `;
 }
 
 // =========================================================================
@@ -36,6 +72,7 @@ if (!VERIFY_TOKEN || !ACCESS_TOKEN || !PHONE_NUMBER_ID) {
  * @returns {Promise<object>} The user document retrieved from the sheet.
  */
 async function getUserState(phone) {
+    // ... (unchanged logic from previous step, but adding preferred_persona to default)
     try {
         const response = await axios.post(APPS_SCRIPT_URL, {
             action: 'GET_STATE',
@@ -43,6 +80,10 @@ async function getUserState(phone) {
         });
         
         if (response.data.success && response.data.user) {
+            // Ensure preferred_persona is set for existing users
+            if (!response.data.user.preferred_persona) {
+                response.data.user.preferred_persona = 'lily'; // Default to Lily
+            }
             return response.data.user;
         } else {
             console.error("Apps Script GET_STATE failed:", response.data.error || "Unknown response structure");
@@ -61,6 +102,7 @@ async function getUserState(phone) {
             created_at: new Date().toISOString(),
             status: 'NEW', 
             current_flow: 'onboarding',
+            preferred_persona: 'lily', // Default to Lily
             row_index: 0,
             service_category: '', 
             description_summary: '', 
@@ -68,7 +110,8 @@ async function getUserState(phone) {
             state_initial: 'Lagos', 
             budget_initial: '', 
             item_name: '', 
-            item_description: ''
+            item_description: '',
+            match_data: '{}'
         };
     }
 }
@@ -78,7 +121,12 @@ async function getUserState(phone) {
  * @param {object} user The user object to save.
  */
 async function saveUser(user) {
+    // ... (unchanged logic from previous step)
     try {
+        // Map item fields to unified fields before saving, for clarity
+        user.item_name = user.service_category;
+        user.item_description = user.description_summary;
+
         const response = await axios.post(APPS_SCRIPT_URL, {
             action: 'SAVE_STATE',
             user: user
@@ -96,31 +144,20 @@ async function saveUser(user) {
 }
 
 // =========================================================================
-// GEMINI AI INTEGRATION 
+// GEMINI AI INTEGRATION (Modified to use dynamic System Instruction)
 // =========================================================================
 
-const SYSTEM_INSTRUCTION = `
-You are YourHelpa, a WhatsApp-based conversational marketplace operating exclusively in **Nigeria**, currently serving users in **Lagos State** and **Oyo State**.
-Your primary goal is to facilitate simple and safe transactions for both **Services (Hiring)** and **Items (Buying/Selling)**.
-Your persona is friendly, encouraging, highly reliable, and concise. You use emojis sparingly for clarity.
-Crucially, you are capable of fetching and summarizing seller details, product catalogs, service portfolios, and associated online presence (websites, blogs, social media) from the web to match user requests.
-
-Response Rules:
-1. Always keep responses short and to the point.
-2. All location references must prioritize Lagos or Oyo State.
-`;
-
-// Define the JSON schema for service request parsing
+// Define the JSON schema for service request parsing (Unchanged)
 const SERVICE_REQUEST_SCHEMA = {
   type: "OBJECT",
   properties: {
     service_category: { 
         type: "STRING", 
-        description: "A single, normalized category for the service or item (e.g., 'Plumber', 'Tailor', 'iPhone 12', 'Custom Cake'). Must be relevant to Nigerian goods/services. Do not use 'Other'." 
+        description: "A single, normalized category for the service or item (e.g., 'Plumber', 'Tailor', 'iPhone 12', 'Custom Cake'). Must be relevant to Nigerian goods/services." 
     },
     description_summary: { 
         type: "STRING", 
-        description: "A very concise summary of the specific job or item requested, max 10 words." 
+        description: "A very concise summary of the specific job or item requested, max 10 words. Do not repeat the category." 
     },
     extracted_city: { 
         type: "STRING", 
@@ -135,16 +172,16 @@ const SERVICE_REQUEST_SCHEMA = {
         description: "The budget, price range, or compensation mentioned, if any (e.g., '₦50,000', '$100'). Leave empty if not found." 
     }
   },
-  required: ["service_category", "description_summary"]
+  required: ["service_category", "description_summary", "extracted_state"]
 };
 
-// Define the schema for Intent Detection
+// Define the schema for Intent Detection (Unchanged)
 const INTENT_SCHEMA = {
   type: "OBJECT",
   properties: {
     intent: { 
         type: "STRING", 
-        description: "The most relevant action ID the user is asking for. Must be one of: OPT_FIND_SERVICE, OPT_BUY_ITEM, OPT_REGISTER_HELPA, OPT_LIST_ITEM, OPT_MY_ACTIVE, OPT_SUPPORT, MENU, UNKNOWN." 
+        description: "The most relevant action ID the user is asking for. Must be one of: OPT_FIND_SERVICE, OPT_BUY_ITEM, OPT_REGISTER_ME, OPT_MY_ACTIVE, OPT_SUPPORT, OPT_CHANGE_PERSONA, MENU, UNKNOWN." 
     }
   },
   required: ["intent"]
@@ -152,30 +189,26 @@ const INTENT_SCHEMA = {
 
 /**
  * Uses Gemini to detect the user's intent from their text input.
- * NOTE: The 'tools' property is intentionally omitted here as it conflicts with JSON schema output.
- * @param {string} input The user's typed text or interactive button/list ID (received in UPPERCASE).
- * @param {string} role The user's current role ('hire', 'helpa', 'seller').
- * @returns {Promise<string>} The standardized intent ID (e.g., 'OPT_FIND_SERVICE').
  */
-async function getAIIntent(input, role) {
+async function getAIIntent(input, role, persona) {
     if (!GEMINI_API_KEY) return 'UNKNOWN';
     
-    // FIX 1: Check for explicit IDs/Keywords in UPPERCASE since input is passed in UPPERCASE
+    // Check for explicit IDs/Keywords in UPPERCASE since input is passed in UPPERCASE
     if (input.startsWith('OPT_') || input.startsWith('CONFIRM_') || input.startsWith('CORRECT_') || input.startsWith('SELECT_')) return input;
-    if (input === 'MENU' || input === 'HI' || input === 'HELLO' || input === 'BACK' || input === '1' || input === '2' || input === '3') return 'MENU'; // Added 1, 2, 3 as shortcut
+    if (input === 'MENU' || input === 'HI' || input === 'HELLO' || input === 'BACK' || input === '1' || input === '2' || input === '3') return 'MENU'; 
 
     const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
     
     const parsingInstruction = `
-        The user has sent the following message: "${input}". 
+        You are ${persona.name}. The user has sent the following message: "${input}". 
         The user's current role is "${role}".
         Determine the user's intent from the following allowed options:
         - OPT_FIND_SERVICE (for hiring/finding a professional/service)
         - OPT_BUY_ITEM (for buying a product/item)
-        - OPT_REGISTER_HELPA (for offering a service)
-        - OPT_LIST_ITEM (for listing an item for sale)
+        - OPT_REGISTER_ME (for offering a service or selling an item - unified entry)
         - OPT_MY_ACTIVE (for checking active jobs/purchases)
         - OPT_SUPPORT (for seeking support or updating a profile)
+        - OPT_CHANGE_PERSONA (for changing the AI's persona, e.g., 'talk like a boy')
         - MENU (for returning to the main menu)
         - UNKNOWN (if none of the above apply)
         
@@ -188,7 +221,6 @@ async function getAIIntent(input, role) {
             responseMimeType: "application/json",
             responseSchema: INTENT_SCHEMA,
         },
-        // IMPORTANT: The 'tools' property is REMOVED here to fix the 400 error.
     };
 
     try {
@@ -202,17 +234,19 @@ async function getAIIntent(input, role) {
 
     } catch (error) {
         console.error("Gemini Intent Detection API Error:", error.response?.data || error.message);
-        return 'UNKNOWN'; // Default to unknown if API fails
+        return 'UNKNOWN'; 
     }
 }
 
 /**
  * Calls the Gemini API for conversational responses (Text-to-Text).
+ * Now accepts the user's preferred persona.
  */
-async function generateAIResponse(text, systemPrompt = SYSTEM_INSTRUCTION) {
+async function generateAIResponse(text, userPersona = 'lily') {
     if (!GEMINI_API_KEY) return "⚠️ AI Service Error: GEMINI_API_KEY is not configured.";
     
     const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+    const systemPrompt = getSystemInstruction(userPersona);
     
     const payload = {
         contents: [{ parts: [{ text: text }] }],
@@ -227,33 +261,51 @@ async function generateAIResponse(text, systemPrompt = SYSTEM_INSTRUCTION) {
         });
         
         const result = response.data;
-        return result.candidates?.[0]?.content?.parts?.[0]?.text || "Sorry, I couldn't process that request right now. Please try again.";
+        return result.candidates?.[0]?.content?.parts?.[0]?.text || "Eish! Something went wrong, but don't worry, I'm working to fix it. Please type MENU to start over.";
 
     } catch (error) {
         console.error("Gemini Conversational API Error:", error.response?.data || error.message);
-        return "I'm having trouble connecting to my brain. Please wait a moment and try sending your message again.";
+        return "I'm currently experiencing some network issues on the way to my village. Please wait a moment and try sending your message again.";
     }
 }
 
 /**
- * Calls the Gemini API for structured output (JSON) for parsing requests.
- * FIX 2: Removed 'tools' property to resolve the 400 error.
+ * Calls the Gemini API for structured output (JSON) for parsing requests and corrections.
  */
-async function parseServiceRequest(requestText) {
+async function parseServiceRequest(requestText, currentRequest, flowType, userPersona = 'lily') {
     if (!GEMINI_API_KEY) return null;
     
     const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+    const systemPrompt = getSystemInstruction(userPersona);
     
-    const parsingInstruction = `
-        You are a highly efficient text parsing engine focusing on the Nigerian market in Lagos and Oyo States. Analyze the following user request for a service or item purchase.
-        Extract the most specific category, a very brief summary, the city/area, the state (Lagos or Oyo), and the budget/price.
-        Your entire output MUST be a JSON object adhering to the provided schema.
-        User Request: "${requestText}"
+    const currentCategory = currentRequest.service_category || 'none';
+    const currentSummary = currentRequest.description_summary || 'none';
+    const currentCity = currentRequest.city_initial || 'none';
+    const currentState = currentRequest.state_initial || 'Lagos';
+    const currentBudget = currentRequest.budget_initial || 'none';
+
+    // Contextualize the prompt for better accuracy and correction handling
+    const parsingInstruction = `${systemPrompt} 
+        You are a highly efficient text parsing engine for a ${flowType} request. 
+        Analyze the following user input, which could be a brand new request or a correction to an existing request.
+        
+        Existing Request Details (Use these values unless the new input explicitly changes them):
+        - Category: ${currentCategory}
+        - Summary: "${currentSummary}"
+        - Location City: ${currentCity}
+        - Location State: ${currentState}
+        - Budget: ${currentBudget}
+        
+        New User Input: "${requestText}"
+        
+        Task: 
+        1. If this is a correction, update *only* the fields that are explicitly changed by the new input.
+        2. If this is a new request, extract all available fields.
+        3. Ensure the output is a full JSON object adhering to the schema.
     `;
 
     const payload = {
         contents: [{ parts: [{ text: parsingInstruction }] }],
-        // FIX 2: The 'tools' property has been removed from this function to allow JSON schema to work.
         generationConfig: {
             responseMimeType: "application/json",
             responseSchema: SERVICE_REQUEST_SCHEMA,
@@ -281,13 +333,13 @@ async function parseServiceRequest(requestText) {
 
 
 // =========================================================================
-// WHATSAPP INTERACTIVE MESSAGING FUNCTIONS 
+// WHATSAPP INTERACTIVE MESSAGING FUNCTIONS (Modified for Media)
 // =========================================================================
 
 const META_API_URL = `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`;
 
 /**
- * Sends a WhatsApp message (text, interactive list, or buttons).
+ * Sends a WhatsApp message (text, interactive list, buttons, or image).
  */
 async function sendWhatsAppMessage(to, messagePayload) {
     try {
@@ -312,97 +364,68 @@ async function sendWhatsAppMessage(to, messagePayload) {
 }
 
 /**
- * Generates the Main Menu as a WhatsApp Interactive Button Message and List.
- * FIX: All button titles are now 20 characters maximum.
+ * Generates and sends the Main Menu with the AI's persona image.
  */
-function getMainMenu(role, senderName) {
-    const welcomeText = `🇳🇬 Welcome back, *${senderName}*! What would you like to do?`;
+async function sendMainMenu(senderId, user, senderName) {
+    const persona = PERSONAS[user.preferred_persona.toUpperCase()] || PERSONAS.LILY;
+    const welcomeText = `${persona.name} here, your personal Helpa! 👋 Welcome back, *${senderName}*. I'm here to connect you with the best services and items in Nigeria.`;
+    
+    const imageCaption = `${welcomeText}\n\nWhat can I help you find today?`;
     
     const buttons = [
-        // 20 CHARACTERS MAX
-        { type: "reply", reply: { id: "OPT_FIND_SERVICE", title: "Hire a Professional" } }, // 20 chars
-        { type: "reply", reply: { id: "OPT_BUY_ITEM", title: "Buy/Find an Item" } },         // 18 chars
+        { type: "reply", reply: { id: "OPT_FIND_SERVICE", title: "🛠️ Hire a Professional" } }, 
+        { type: "reply", reply: { id: "OPT_BUY_ITEM", title: "🛍️ Buy/Find an Item" } },         
     ];
     
-    // Add provider options only if the role hasn't been assigned yet
-    if (role !== 'helpa' && role !== 'seller') {
-         // FIX: Shortened from "Register to Sell/Offer" (24 chars)
-         buttons.push({ type: "reply", reply: { id: "OPT_REGISTER_ME", title: "Register as Provider" } }); // 20 chars
+    if (user.role === 'unassigned') {
+         buttons.push({ type: "reply", reply: { id: "OPT_REGISTER_ME", title: "🌟 Register as Provider" } }); 
     }
-
-    // List for secondary options 
+    
     const listSections = [{
-        title: "More Options",
+        title: "Account & Settings",
         rows: [
-            { id: "OPT_MY_ACTIVE", title: "My Active Jobs/Listings" },
-            { id: "OPT_SUPPORT", title: "Support & Settings" }
+            { id: "OPT_MY_ACTIVE", title: "💼 My Active Jobs/Listings" },
+            { id: "OPT_SUPPORT", title: "⚙️ Support & Settings" },
+            { id: "OPT_CHANGE_PERSONA", title: `🔄 Switch to ${persona.name === 'Lily' ? 'Kore' : 'Lily'}` }
         ]
     }];
 
-    if (buttons.length === 3) {
-        // Send a Button Message for the primary 3 options
-        return {
-            type: "interactive",
-            interactive: {
-                type: "button",
-                body: { text: welcomeText },
-                action: {
-                    buttons: buttons
-                },
-                footer: { text: "Or select a secondary option below." }
+    // 1. Send the image first (to make it exciting)
+    await sendWhatsAppMessage(senderId, {
+        type: "image",
+        image: {
+            link: persona.avatar_url,
+            caption: imageCaption
+        }
+    });
+
+    // 2. Send the interactive list/buttons right after the image
+    const combinedSections = [{
+         title: "Quick Actions",
+         rows: buttons.map(b => b.reply)
+    }, ...listSections];
+    
+    const menuPayload = {
+        type: "interactive",
+        interactive: {
+            type: "list",
+            header: { type: "text", text: `${persona.name}'s Main Menu` },
+            body: { text: "Use the list below for quick access to everything!" },
+            action: {
+                button: "View Options",
+                sections: combinedSections
             }
-        };
-    } else {
-        // Send a List Message to combine primary and secondary options cleanly
-        const combinedSections = [{
-             title: "Quick Access",
-             rows: [
-                { id: "OPT_FIND_SERVICE", title: "Hire a Professional" },
-                { id: "OPT_BUY_ITEM", title: "Buy/Find an Item" }
-             ]
-        }, ...listSections];
-        
-        return {
-            type: "interactive",
-            interactive: {
-                type: "list",
-                header: { type: "text", text: "YourHelpa Main Menu" },
-                body: { text: welcomeText },
-                action: {
-                    button: "View Options",
-                    sections: combinedSections
-                }
-            }
-        };
-    }
+        }
+    };
+    
+    await sendWhatsAppMessage(senderId, menuPayload);
 }
 
 /**
  * Generates a WhatsApp Interactive Button Message for YES/NO confirmation.
  */
-function getConfirmationButtons(bodyText, yesId, noId) {
-    return {
-        type: "interactive",
-        interactive: {
-            type: "button",
-            body: { text: bodyText },
-            action: {
-                // Titles are <= 20 chars: "✅ YES, Looks Good" (19 chars), "❌ NO, Correct It" (17 chars)
-                buttons: [
-                    { type: "reply", reply: { id: yesId, title: "✅ YES, Looks Good" } },
-                    { type: "reply", reply: { id: noId, title: "❌ NO, Correct It" } }
-                ]
-            }
-        }
-    };
-}
-
-/**
- * Generates a choice between Helpa (Service) and Seller (Item).
- * FIX: Button titles are now 20 characters maximum.
- * @param {string} bodyText The prompt text.
- */
-function getRegistrationChoiceButtons(bodyText) {
+function getConfirmationButtons(bodyText, yesId, noId, userPersona = 'lily') {
+    const persona = PERSONAS[userPersona.toUpperCase()] || PERSONAS.LILY;
     return {
         type: "interactive",
         interactive: {
@@ -410,17 +433,14 @@ function getRegistrationChoiceButtons(bodyText) {
             body: { text: bodyText },
             action: {
                 buttons: [
-                    // FIX: Shortened from "Offer a Service (Helpa)" (23 chars)
-                    { type: "reply", reply: { id: "OPT_REGISTER_HELPA", title: "Offer a Service" } }, // 17 chars
-                    // FIX: Shortened from "Sell an Item (Seller)" (21 chars)
-                    { type: "reply", reply: { id: "OPT_LIST_ITEM", title: "Sell an Item" } },           // 12 chars
-                    { type: "reply", reply: { id: "MENU", title: "⬅️ Back to Menu" } }                  // 15 chars
+                    { type: "reply", reply: { id: yesId, title: "✅ YES, Let's Go" } },
+                    { type: "reply", reply: { id: noId, title: `❌ NO, Let Me Correct It` } }
                 ]
-            }
+            },
+            footer: { text: `Chatting with ${persona.name}` }
         }
     };
 }
-
 
 /**
  * Fallback to sending a simple text message.
@@ -431,21 +451,20 @@ function sendTextMessage(to, text) {
 
 
 // =========================================================================
-// MATCHING LOGIC - IMPLEMENTING CAROUSEL ALTERNATIVE (List Message) 
+// MATCHING LOGIC (Modified for better visual lists)
 // =========================================================================
 
 /**
  * Handles the AI-powered matching process for services or items.
- * Uses a List Message to simulate a rich, scrollable carousel card view.
  */
 async function handleMatching(user, senderId) {
     const isService = user.current_flow === 'service_request';
     const flowType = isService ? 'Service Request (Hiring)' : 'Item Purchase (Buying)';
-    const category = isService ? user.service_category : user.item_name;
-    const summary = isService ? user.description_summary : user.item_description;
+    const category = user.service_category;
+    const summary = user.description_summary;
     const providerRole = isService ? 'Helpa (Service Provider)' : 'Seller (Product Vendor)';
     
-    // --- Gemini Prompt to generate structured match data (CRITICAL CHANGE) ---
+    // Use the persona in the matching prompt
     const matchingPrompt = `
         You are a Nigerian Market Intelligence Engine for YourHelpa. The user needs help with a ${flowType}.
         
@@ -462,7 +481,7 @@ async function handleMatching(user, senderId) {
         2. For each match, provide:
            - A Nigerian **Name** (e.g., 'Ayo's Auto Services').
            - A **Title/Category** (e.g., 'Master Plumber' or 'Custom Cake Vendor').
-           - A **Detailed Description** (3-4 sentences describing their pricing, services offered, verified rating, and portfolio link - max 80 characters for the description).
+           - A **Detailed Description** (max 80 characters, describing their key selling point, a ⭐️ rating, and where they operate).
            - **NEVER INCLUDE A PHONE NUMBER.**
 
         Your entire output MUST be a JSON object adhering to the schema below.
@@ -479,7 +498,7 @@ async function handleMatching(user, senderId) {
                         name: { type: "STRING" },
                         title: { type: "STRING" },
                         description: { type: "STRING" },
-                        mock_id: { type: "STRING" } // Unique ID for selection
+                        mock_id: { type: "STRING" }
                     }
                 }
             }
@@ -487,48 +506,46 @@ async function handleMatching(user, senderId) {
     };
 
     let matches = [];
-    // Note: We use the non-grounded endpoint for the structured output to avoid the 400 error.
-    let searchResponse = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`, {
-        contents: [{ parts: [{ text: matchingPrompt }] }],
-        // tools: [{ "google_search": {} }], // Removed for JSON compatibility
-        generationConfig: {
-            responseMimeType: "application/json",
-            responseSchema: MATCHING_SCHEMA,
-        },
-    }, { headers: { 'Content-Type': 'application/json' } });
-
+    
+    let searchResponse;
     try {
+        searchResponse = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`, {
+            contents: [{ parts: [{ text: matchingPrompt }] }],
+            generationConfig: {
+                responseMimeType: "application/json",
+                responseSchema: MATCHING_SCHEMA,
+            },
+        }, { headers: { 'Content-Type': 'application/json' } });
+
         const jsonString = searchResponse.data.candidates?.[0]?.content?.parts?.[0]?.text;
         
-        // Ensure the mock_id is always present for the next step (simulating phone number retrieval)
         let parsedMatches = JSON.parse(jsonString).matches;
         matches = parsedMatches.map((match, index) => ({
             ...match,
-            // Simulating a unique ID that would map to a real phone number in a database
             mock_id: match.mock_id || `MOCK_PH_${isService ? 'H' : 'S'}${index + 1}` 
         }));
 
     } catch (e) {
         console.error("Failed to parse matches from Gemini:", e.message);
-        await sendTextMessage(senderId, "Sorry, I couldn't generate the matches right now. Please try your request again.");
+        await sendTextMessage(senderId, await generateAIResponse("Ah, my search system hit a small snag while trying to find matches. Please try your request again in a minute, abi? Type MENU to return."));
         return;
     }
 
-    // --- Build the List Message (Carousel Alternative) ---
+    // --- Build the List Message ---
     const listSections = [{
         title: `Top 3 Verified ${providerRole}s`,
         rows: matches.map((match, index) => ({
             id: `SELECT_${isService ? 'HELPA' : 'SELLER'}_${index + 1}`,
-            title: `${index + 1} | ${match.name} (${match.title})`,
+            title: `${index + 1}. ${match.name} (${match.title})`,
             description: match.description 
         }))
     }];
 
-    const replyText = `🇳🇬 *Matches Found!* Here are 3 verified ${providerRole}s for your request. Scroll through the options below to see their profile details and select who you want to connect with.`;
+    const persona = PERSONAS[user.preferred_persona.toUpperCase()];
+    const replyText = await generateAIResponse(`The user is waiting for the matching result. Respond excitedly (using the ${persona.name} persona) that you have found 3 verified ${providerRole}s for their request and they should choose one from the list below. Keep it max 2 sentences.`);
     
-    // Save the generated matches (the full list)
     user.match_data = JSON.stringify(matches);
-    user.status = isService ? 'SERVICE_AWAIT_SELECTION' : 'BUYER_AWAIT_SELECTION';
+    user.status = 'AWAIT_SELECTION';
     await saveUser(user);
 
     const listPayload = {
@@ -538,9 +555,10 @@ async function handleMatching(user, senderId) {
             header: { type: "text", text: `Best Matches for ${category}` },
             body: { text: replyText },
             action: {
-                button: "Select a Provider",
+                button: "View and Select Provider",
                 sections: listSections
-            }
+            },
+            footer: { text: `Chatting with ${persona.name}` }
         }
     };
     await sendWhatsAppMessage(senderId, listPayload);
@@ -549,39 +567,6 @@ async function handleMatching(user, senderId) {
 // =========================================================================
 // MESSAGE ROUTER AND FLOW LOGIC
 // =========================================================================
-
-function updateUserDetails(user, parsedData) {
-    user.service_category = parsedData.service_category;
-    user.description_summary = parsedData.description_summary;
-    user.city_initial = parsedData.extracted_city;
-
-    let extractedState = parsedData.extracted_state.toLowerCase();
-    if (extractedState.includes('oyo')) {
-        user.state_initial = 'Oyo';
-    } else {
-        user.state_initial = 'Lagos'; // Default
-    }
-    user.budget_initial = parsedData.extracted_budget;
-    return user;
-}
-
-function buildConfirmationMessage(user, type = 'service') {
-    const category = type === 'service' ? user.service_category : user.item_name;
-    const summary = type === 'service' ? user.description_summary : user.item_description;
-    const budgetDisplay = user.budget_initial || "₦XXXX";
-
-    let message = `*Got it!* You're looking for a *${category}* to help with: _"${summary}"_.\n\n`;
-
-    message += `I see this job/purchase is in *${user.state_initial} State*. `;
-
-    if (user.city_initial) {
-        message += `(Specifically the ${user.city_initial} area). `;
-    }
-
-    message += `Is this correct, and is your estimated budget/price around *${budgetDisplay}*?`;
-    
-    return message;
-}
 
 /**
  * Main function to handle the user's message and determine the next step.
@@ -594,275 +579,278 @@ async function handleMessageFlow(senderId, senderName, message) {
         const lowerText = incomingText.trim().toLowerCase();
         
         let flowInput = interactiveId || lowerText;
+        const persona = PERSONAS[user.preferred_persona.toUpperCase()];
+
 
         // --- 1. INTENT DETECTION ---
-        // Flow input is converted to UPPERCASE for internal ID/keyword checking
-        const intent = await getAIIntent(flowInput.toUpperCase(), user.role); 
-        console.log(`[Flow] Detected Intent: ${intent} | Current Status: ${user.status}`);
+        const intent = await getAIIntent(flowInput.toUpperCase(), user.role, persona); 
+        console.log(`[Flow] Detected Intent: ${intent} | Current Status: ${user.status} | Persona: ${persona.name}`);
 
-        // --- 2. NEW USER ONBOARDING ---
-        if (user.status === 'NEW' || user.status === 'unassigned' || user.status === 'ERROR' || intent === 'MENU') {
-            const menuPayload = getMainMenu(user.role, senderName);
-            user.status = 'MAIN_MENU'; // Set to MAIN_MENU to allow AI intent routing on next message
+        // --- 2. MAIN MENU & ONBOARDING ROUTING ---
+        if (user.status === 'NEW' || intent === 'MENU') {
+            user.status = 'MAIN_MENU'; 
             await saveUser(user);
-            await sendWhatsAppMessage(senderId, menuPayload);
+            await sendMainMenu(senderId, user, senderName);
             return;
         } 
         
-        // --- 3. MAIN MENU ROUTING (Triggered by AI Intent) ---
-        else if (user.status === 'MAIN_MENU' || user.status === 'ONBOARDING_ROLE_ASKED' || intent.startsWith('OPT_REGISTER_ME')) {
+        // --- 3. MAIN MENU INTENT HANDLING ---
+        else if (user.status === 'MAIN_MENU') {
             
             switch (intent) {
-                // --- Requester Flows (Hire/Buy) ---
-                case 'OPT_FIND_SERVICE':
-                    user.current_flow = 'service_request';
-                    user.status = 'SERVICE_ASK_WHAT';
+                // --- Persona Switch ---
+                case 'OPT_CHANGE_PERSONA':
+                    const newPersonaKey = user.preferred_persona === 'lily' ? 'kore' : 'lily';
+                    user.preferred_persona = newPersonaKey;
                     await saveUser(user);
-                    const prompt1 = await generateAIResponse("The user is starting the 'Find a professional or service provider' flow. Ask them 'What service do you need, and where? (e.g., A plumber in Ibadan, a graphic designer in Lagos)' in a friendly, conversational tone.");
-                    await sendTextMessage(senderId, prompt1);
-                    return;
-                case 'OPT_BUY_ITEM':
-                    user.current_flow = 'buyer_flow';
-                    user.status = 'BUYER_ASK_ITEM';
-                    await saveUser(user);
-                    const prompt2 = await generateAIResponse("The user is starting the 'Buy an item' flow. Ask them 'What item are you looking to buy, and where? (e.g., A used iPhone 12 in Lagos or a custom cake in Ibadan)' in a friendly, conversational tone.");
-                    await sendTextMessage(senderId, prompt2);
+                    const newPersona = PERSONAS[newPersonaKey.toUpperCase()];
+                    const switchText = await generateAIResponse(`The user has switched to the ${newPersona.name} persona. Greet them in your new persona and confirm the switch is successful, then send the main menu again.`, newPersonaKey);
+                    await sendTextMessage(senderId, switchText);
+                    await sendMainMenu(senderId, user, senderName);
                     return;
 
-                // --- Provider Flows (Helpa/Seller) ---
+                // --- Requester Flows (Hire/Buy) - UNIFIED START ---
+                case 'OPT_FIND_SERVICE':
+                case 'OPT_BUY_ITEM':
+                    user.current_flow = (intent === 'OPT_FIND_SERVICE') ? 'service_request' : 'buyer_flow';
+                    user.status = 'REQUEST_AWAITING_PARSE';
+                    
+                    const flowPrompt = (intent === 'OPT_FIND_SERVICE') 
+                        ? `The user is hiring. As ${persona.name}, ask them: 'What service do you need, and where? (e.g., A plumber in Ibadan, a graphic designer in Lagos)'`
+                        : `The user is buying. As ${persona.name}, ask them: 'What item are you looking to buy, and where? (e.g., A used iPhone 12 in Lagos or a custom cake in Ibadan)'`;
+
+                    await saveUser(user);
+                    const prompt = await generateAIResponse(flowPrompt, user.preferred_persona);
+                    await sendTextMessage(senderId, prompt);
+                    return;
+
+                // --- Provider Flows (Registration) ---
                 case 'OPT_REGISTER_ME':
-                    if (user.role === 'helpa' || user.role === 'seller') {
-                        const message = await generateAIResponse(`The user is trying to register, but their role is already set to ${user.role}. Respond with a polite, brief message (max 2 sentences) confirming their existing role and telling them to use option 6 (Support) to update their profile or list new services.`);
+                    if (user.role !== 'unassigned') {
+                        const message = await generateAIResponse(`The user is trying to register, but their role is already set to ${user.role}. As ${persona.name}, respond with a polite, brief message (max 2 sentences) confirming their existing role and telling them to use the 'Support & Settings' option to update their profile or list a new item/service.`);
                         await sendTextMessage(senderId, message);
                         return;
                     }
                     user.status = 'ASK_PROVIDER_TYPE';
                     await saveUser(user);
-                    const regChoiceText = "Great! Do you want to *Offer a Service* (become a Helpa) or *Sell an Item* (become a Seller)?";
-                    const regChoicePayload = getRegistrationChoiceButtons(regChoiceText);
+                    const regChoiceText = await generateAIResponse(`The user selected 'Register as Provider'. As ${persona.name}, ask them if they want to Offer a Service (Helpa) or Sell an Item (Seller).`);
+                    const regChoicePayload = {
+                        type: "interactive",
+                        interactive: {
+                            type: "button",
+                            body: { text: regChoiceText },
+                            action: {
+                                buttons: [
+                                    { type: "reply", reply: { id: "OPT_REGISTER_HELPA", title: "Offer a Service (Helpa)" } }, 
+                                    { type: "reply", reply: { id: "OPT_LIST_ITEM", title: "Sell an Item (Seller)" } },           
+                                    { type: "reply", reply: { id: "MENU", title: "⬅️ Back to Menu" } }                  
+                                ]
+                            },
+                            footer: { text: `Chatting with ${persona.name}` }
+                        }
+                    };
                     await sendWhatsAppMessage(senderId, regChoicePayload);
                     return;
 
-                case 'OPT_REGISTER_HELPA': // Triggered by the button in getRegistrationChoiceButtons
-                    user.current_flow = 'helpa_registration';
-                    user.status = 'HELPA_ASK_NAME';
-                    user.role = 'helpa'; // Set role immediately
-                    await saveUser(user);
-                    const prompt3 = await generateAIResponse("The user is starting the 'Helpa Registration' flow for Lagos/Oyo. Ask them for their full name and city to begin registration.");
-                    await sendTextMessage(senderId, prompt3);
-                    return;
-                    
-                case 'OPT_LIST_ITEM': // Triggered by the button in getRegistrationChoiceButtons
-                    user.current_flow = 'seller_registration';
-                    user.status = 'SELLER_ASK_PRODUCT';
-                    user.role = 'seller'; // Set role immediately
-                    await saveUser(user);
-                    const prompt4 = await generateAIResponse("The user is starting the 'Seller Registration' flow. Ask them for the name and a short description of the first item they want to list for sale in Lagos/Oyo.");
-                    await sendTextMessage(senderId, prompt4);
-                    return;
-
-                // --- Account Flows ---
                 case 'OPT_MY_ACTIVE':
-                    await sendTextMessage(senderId, "The *My Active Jobs/Purchases* feature is under construction! Check back soon. Type MENU to return.");
+                    const activePrompt = await generateAIResponse(`The user selected 'My Active Jobs/Listings'. As ${persona.name}, explain that this feature is currently under construction, and guide them back to the menu.`);
+                    await sendTextMessage(senderId, activePrompt);
                     return;
                 case 'OPT_SUPPORT':
-                    const prompt6 = await generateAIResponse("The user needs support. Acknowledge this and offer a way to contact a human admin using a mock email address: support@yourhelpa.com. Offer the MENU button.");
-                    await sendWhatsAppMessage(senderId, getConfirmationButtons(prompt6, "MENU", "MENU_IGNORED")); // Reuse button logic for simple options
+                    const supportPrompt = await generateAIResponse(`The user needs support. As ${persona.name}, acknowledge this and offer a way to contact a human admin using a mock email address: help@yourhelpa.com. Offer the MENU button.`);
+                    await sendWhatsAppMessage(senderId, getConfirmationButtons(supportPrompt, "MENU", "MENU_IGNORED", user.preferred_persona)); 
                     return;
 
                 case 'UNKNOWN':
-                    const promptDefault = await generateAIResponse(`The user sent: "${incomingText}". They are at the Main Menu, and the input was unrecognized. Guide them back to choosing an option from the menu, or just type what they need.`);
+                    const promptDefault = await generateAIResponse(`The user sent: "${incomingText}". They are at the Main Menu, and the input was unrecognized. As ${persona.name}, politely guide them back to choosing an option from the menu, or just type what they need.`);
                     await sendTextMessage(senderId, promptDefault);
                     return;
-                
-                // Fallthrough for flow-specific intents should be handled below
             }
         } 
         
-        // --- FLOW 1: SERVICE REQUEST: ASK WHAT ---
-        else if (user.status === 'SERVICE_ASK_WHAT' && incomingText) {
-            // ... (Logic to parse request and show confirmation buttons)
-            const parsedData = await parseServiceRequest(incomingText);
+        // --- 4. PROVIDER TYPE SELECTION (After Register Me) ---
+        else if (user.status === 'ASK_PROVIDER_TYPE') {
+            let roleSet = '';
+            if (intent === 'OPT_REGISTER_HELPA') {
+                user.role = 'helpa';
+                roleSet = 'Helpa (Service Provider)';
+            } else if (intent === 'OPT_LIST_ITEM') {
+                user.role = 'seller';
+                roleSet = 'Seller (Product Vendor)';
+            }
 
-            if (!parsedData) {
-                const retryText = "I had trouble understanding that. Could you please describe the service you need again? E.g., 'A plumber in Ibadan to fix a leaking pipe for ₦15,000.'";
+            if (roleSet) {
+                user.status = 'MAIN_MENU';
+                await saveUser(user);
+                const reply = await generateAIResponse(`The user has successfully set their role to ${roleSet}. As ${persona.name}, welcome them warmly and tell them they should now use the 'Support & Settings' option to fully set up their profile and list their first service/item.`);
+                await sendWhatsAppMessage(senderId, getConfirmationButtons(reply, "MENU", "MENU_IGNORED", user.preferred_persona));
+                return;
+            }
+        }
+        
+        // --- 5. REQUEST FLOW: AWAITING PARSE (Initial Request) ---
+        else if (user.status === 'REQUEST_AWAITING_PARSE' && incomingText) {
+            // New request - pass empty context {}
+            const parsedData = await parseServiceRequest(incomingText, {}, user.current_flow, user.preferred_persona);
+
+            if (!parsedData || !parsedData.service_category) {
+                const retryText = await generateAIResponse(`I had trouble understanding that. As ${persona.name}, ask them to please describe their request again, including *what* they need and *where*? (e.g., 'A technician in Yaba, Lagos for TV repair').`);
                 await sendTextMessage(senderId, retryText);
             } else {
-                user = updateUserDetails(user, parsedData);
-                user.status = 'SERVICE_CONFIRM_DETAILS'; 
+                user = updateRequestDetails(user, parsedData);
+                user.status = 'REQUEST_CONFIRMATION'; 
                 await saveUser(user);
                 
-                const bodyText = buildConfirmationMessage(user, 'service');
-                const confirmationPayload = getConfirmationButtons(bodyText, "CONFIRM_SERVICE", "CORRECT_SERVICE");
+                const bodyText = buildConfirmationMessage(user);
+                const confirmationPayload = getConfirmationButtons(bodyText, "CONFIRM_REQUEST", "CORRECT_REQUEST", user.preferred_persona);
                 await sendWhatsAppMessage(senderId, confirmationPayload);
             }
         } 
         
-        // --- FLOW 2: BUYER REQUEST: ASK WHAT ---
-         else if (user.status === 'BUYER_ASK_ITEM' && incomingText) {
+        // --- 6. REQUEST FLOW: CONFIRMATION/CORRECTION BUTTONS ---
+        else if (user.status === 'REQUEST_CONFIRMATION') {
             
-            // Re-use the service parser for item details
-            const parsedData = await parseServiceRequest(incomingText);
-
-            if (!parsedData) {
-                const retryText = "I had trouble understanding that. Could you please describe the item you want to buy again? E.g., 'Looking for a clean, used iPhone 12 in Lagos, budget ₦250,000.'";
-                await sendTextMessage(senderId, retryText);
-            } else {
-                user.item_name = parsedData.service_category; // Use category as item name
-                user.item_description = parsedData.description_summary; // Use summary as item description
-                user.city_initial = parsedData.extracted_city;
-
-                let extractedState = parsedData.extracted_state.toLowerCase();
-                if (extractedState.includes('oyo')) {
-                    user.state_initial = 'Oyo';
-                } else {
-                    user.state_initial = 'Lagos'; // Default
-                }
-                user.budget_initial = parsedData.extracted_budget;
-                
-                user.status = 'BUYER_CONFIRM_DETAILS'; 
-                await saveUser(user);
-                
-                const bodyText = buildConfirmationMessage(user, 'item');
-                const confirmationPayload = getConfirmationButtons(bodyText, "CONFIRM_ITEM", "CORRECT_ITEM");
-                await sendWhatsAppMessage(senderId, confirmationPayload);
-            }
-        } 
-        
-        // --- FLOW 1 & 2: CONFIRM DETAILS ---
-        else if (user.status.includes('CONFIRM_DETAILS')) {
-            const flowType = user.current_flow;
-            const isService = flowType === 'service_request';
-            const confirmId = isService ? 'CONFIRM_SERVICE' : 'CONFIRM_ITEM';
-            const correctId = isService ? 'CORRECT_SERVICE' : 'CORRECT_ITEM';
-            const matchStatus = isService ? 'SERVICE_MATCHING' : 'BUYER_MATCHING';
-            const correctingStatus = isService ? 'SERVICE_CORRECTING' : 'BUYER_CORRECTING';
-
-            if (intent === confirmId || lowerText.includes('yes')) {
+            if (intent === 'CONFIRM_REQUEST') {
                 // CONFIRMED: Move to the matching phase
-                user.status = matchStatus;
+                user.status = 'REQUEST_MATCHING';
                 await saveUser(user);
                 
-                const matchType = isService ? 'professionals (Helpas)' : 'sellers';
-                await sendTextMessage(senderId, await generateAIResponse(`The user confirmed the request. Give a very quick, excited response (max 2 sentences) and tell them you are now searching for the top 3 verified ${matchType} that match these criteria in Lagos/Oyo.`));
+                const matchType = user.current_flow === 'service_request' ? 'professionals (Helpas)' : 'sellers';
+                await sendTextMessage(senderId, await generateAIResponse(`The user confirmed the request. As ${persona.name}, give a very quick, excited response (max 2 sentences) and tell them you are now searching for the top 3 verified ${matchType} that match these criteria in Lagos/Oyo.`));
                 
                 await handleMatching(user, senderId);
                 return; 
 
-            } else if (intent === correctId || lowerText.includes('no')) {
+            } else if (intent === 'CORRECT_REQUEST') {
                 // CORRECTION: Ask for the correction
-                user.status = correctingStatus;
+                user.status = 'REQUEST_CORRECTION';
                 await saveUser(user); 
-                const correctionPrompt = "No problem! Please send me the correct details for the request (e.g., 'Change the budget to ₦20,000' or 'It's actually in Lekki, Lagos').";
+                const correctionPrompt = await generateAIResponse(`The user wants to correct the request. As ${persona.name}, acknowledge the request and ask for the correction (e.g., 'The category is actually 'Car Wash' or 'Change the budget to ₦20,000').`);
                 await sendTextMessage(senderId, correctionPrompt);
                 
             } else {
                 // User typed something unexpected when expecting a button click
-                const retryText = `Please either click the *YES, Confirm* or *NO, Correct* button to proceed with your request, or type MENU.`;
+                const retryText = await generateAIResponse(`The user is stuck in the confirmation loop and sent: "${incomingText}". As ${persona.name}, remind them politely to click the *YES* or *NO* button, or type MENU.`);
                 await sendTextMessage(senderId, retryText);
             }
         }
         
-        // --- FLOW 1 & 2: CORRECTION PROCESSING ---
-        else if (user.status.includes('CORRECTING') && incomingText) {
-            const flowType = user.current_flow;
-            const isService = flowType === 'service_request';
-            const confirmStatus = isService ? 'SERVICE_CONFIRM_DETAILS' : 'BUYER_CONFIRM_DETAILS';
-            const confirmId = isService ? 'CONFIRM_SERVICE' : 'CONFIRM_ITEM';
-            const correctId = isService ? 'CORRECT_SERVICE' : 'CORRECT_ITEM';
-            const type = isService ? 'service' : 'item';
-
-            const parsedData = await parseServiceRequest(incomingText);
+        // --- 7. REQUEST FLOW: CORRECTION PROCESSING (Smarter Parse) ---
+        else if (user.status === 'REQUEST_CORRECTION' && incomingText) {
+            // Pass the user's current request details as context to the AI
+            const parsedData = await parseServiceRequest(incomingText, user, user.current_flow, user.preferred_persona);
 
             if (!parsedData) {
-                const retryText = "Sorry, I still didn't get a clear correction. Please send a clear correction (e.g., 'Change the budget to ₦20,000').";
+                const retryText = await generateAIResponse(`The user provided a correction: "${incomingText}", but it was unclear. As ${persona.name}, ask them to send a very clear correction (e.g., 'Change the budget to ₦20,000' or 'It's actually in Lekki, Lagos').`);
                 await sendTextMessage(senderId, retryText);
             } else {
-                if (isService) {
-                    user = updateUserDetails(user, parsedData);
-                } else {
-                    // Update buyer details based on correction parse
-                    user.item_name = parsedData.service_category; 
-                    user.item_description = parsedData.description_summary;
-                    user.city_initial = parsedData.extracted_city;
-                    user.state_initial = parsedData.extracted_state.toLowerCase().includes('oyo') ? 'Oyo' : 'Lagos';
-                    user.budget_initial = parsedData.extracted_budget;
-                }
-                
-                user.status = confirmStatus; // Go back to confirmation state
+                user = updateRequestDetails(user, parsedData);
+                user.status = 'REQUEST_CONFIRMATION'; // Go back to confirmation state
                 await saveUser(user); 
                 
-                const bodyText = buildConfirmationMessage(user, type);
-                const confirmationPayload = getConfirmationButtons(bodyText, confirmId, correctId);
+                const bodyText = buildConfirmationMessage(user);
+                const confirmationPayload = getConfirmationButtons(bodyText, "CONFIRM_REQUEST", "CORRECT_REQUEST", user.preferred_persona);
                 await sendWhatsAppMessage(senderId, confirmationPayload);
             }
         }
         
-        // --- FLOW 1 & 2: AWAITING SELECTION (After Matching) ---
-        else if (user.status.includes('AWAIT_SELECTION')) {
-            const type = user.current_flow === 'service_request' ? 'Helpa' : 'Seller';
+        // --- 8. REQUEST FLOW: AWAITING SELECTION (After Matching) ---
+        else if (user.status === 'AWAIT_SELECTION') {
             
             // Selection is made via the List Message's ID (e.g., SELECT_HELPA_1)
             if (flowInput.startsWith('SELECT_')) {
-                const selectionIndex = parseInt(flowInput.slice(-1)); // Extracts the number 1, 2, or 3
+                const selectionIndex = parseInt(flowInput.slice(-1)); 
                 const matches = JSON.parse(user.match_data || '[]');
 
                 if (selectionIndex >= 1 && selectionIndex <= matches.length) {
                     const selectedMatch = matches[selectionIndex - 1];
                     
                     // --- REVEAL CONTACT DETAILS (Simulated) ---
-                    // Since we didn't generate a real phone number in the prompt, we simulate one for the final connection.
-                    // We use a predictable, realistic-looking mock number based on the match name
                     const mockPhoneNumber = `+23481${(Math.random() * 10000000).toFixed(0).padStart(7, '0')}`;
                     
                     user.status = 'MAIN_MENU'; 
                     await saveUser(user);
                     
-                    const replyText = await generateAIResponse(`The user selected ${selectedMatch.name}. Generate a single, friendly sentence (max 2 sentences) that confirms the selection, and provide the contact information: Name: ${selectedMatch.name}, Title: ${selectedMatch.title}, and the final contact number for connection: ${mockPhoneNumber}.`);
-                    await sendWhatsAppMessage(senderId, getConfirmationButtons(replyText, "MENU", "MENU_IGNORED"));
+                    const replyText = await generateAIResponse(`The user selected ${selectedMatch.name}. As ${persona.name}, generate a single, encouraging sentence (max 2 sentences) that confirms the selection, and provide the contact information: Name: ${selectedMatch.name}, Title: ${selectedMatch.title}, and the final contact number for connection: ${mockPhoneNumber}.`, user.preferred_persona);
+                    await sendWhatsAppMessage(senderId, getConfirmationButtons(replyText, "MENU", "MENU_IGNORED", user.preferred_persona));
                     return;
                 }
             }
             
-            await sendTextMessage(senderId, `Please select a provider from the list above, or type *MENU* to start over.`);
+            const selectionPrompt = await generateAIResponse(`The user is stuck in the selection screen. As ${persona.name}, remind them to select a provider from the list or type MENU.`);
+            await sendTextMessage(senderId, selectionPrompt);
         }
 
-        // --- ALL OTHER FLOWS (HELPA/SELLER REGISTRATION) ---
-        else if (user.status === 'HELPA_ASK_NAME' && incomingText) {
-            user.name = incomingText;
-            user.status = 'HELPA_ASK_SERVICE';
-            await saveUser(user);
-            await sendTextMessage(senderId, "Thank you! What is the primary service you offer (e.g., Plumbing, Mobile Car Wash, Tailoring)?");
-        }
-        else if (user.status === 'HELPA_ASK_SERVICE' && incomingText) {
-            user.service_category = incomingText;
-            user.status = 'MAIN_MENU';
-            await saveUser(user);
-            const finalReply = await generateAIResponse(`The user completed Helpa registration with service: ${incomingText}. Give a warm confirmation (max 3 sentences), confirming their Helpa role and noting that their profile is under review for activation.`);
-            await sendWhatsAppMessage(senderId, getConfirmationButtons(finalReply, "MENU", "MENU_IGNORED"));
-        }
-        // SELLER REGISTRATION (Simplified for now)
-        else if (user.status === 'SELLER_ASK_PRODUCT' && incomingText) {
-            user.item_name = incomingText;
-            user.status = 'MAIN_MENU';
-            await saveUser(user);
-            const finalReply = await generateAIResponse(`The user completed Seller registration with item: ${incomingText}. Give a warm confirmation (max 3 sentences), confirming their Seller role and noting that their product listing is pending review.`);
-             await sendWhatsAppMessage(senderId, getConfirmationButtons(finalReply, "MENU", "MENU_IGNORED"));
-        }
-        
-        // --- DEFAULT FALLBACK ---
+        // --- DEFAULT FALLBACK (Always respond) ---
         else {
-            // If none of the flow states or intents matched, send the menu again
-            const menuPayload = getMainMenu(user.role, senderName);
+            // If none of the flow states or intents matched, send a custom response and the menu again
+            const fallbackPrompt = await generateAIResponse(`The user sent: "${incomingText}", but you are in status ${user.status}. As ${persona.name}, explain that you are waiting for a specific type of input (like a button click) and offer the MENU option.`);
+            await sendTextMessage(senderId, fallbackPrompt);
             user.status = 'MAIN_MENU';
             await saveUser(user);
-            await sendWhatsAppMessage(senderId, menuPayload);
+            await sendMainMenu(senderId, user, senderName);
         }
 
     } catch (error) {
         console.error("Critical error in handleMessageFlow:", error.message);
-        await sendTextMessage(senderId, "A critical system error occurred while processing your request. Please try again later.");
+        await sendTextMessage(senderId, "Biko, something big just went wrong! A critical system error occurred. Please try again later. Type MENU to reset.");
     }
+}
+
+
+// =========================================================================
+// UTILITY FUNCTIONS (Unchanged from previous step, but included for completeness)
+// =========================================================================
+
+/**
+ * Updates the unified request fields on the user object.
+ * @param {object} user The user object to update.
+ * @param {object} parsedData The parsed JSON from the AI.
+ * @returns {object} The updated user object.
+ */
+function updateRequestDetails(user, parsedData) {
+    // Only update if the AI returned a non-null or non-empty value, allowing for smart merging
+    if (parsedData.service_category && parsedData.service_category !== 'none') {
+        user.service_category = parsedData.service_category;
+    }
+    if (parsedData.description_summary && parsedData.description_summary !== 'none') {
+        user.description_summary = parsedData.description_summary;
+    }
+    if (parsedData.extracted_city && parsedData.extracted_city !== 'none') {
+        user.city_initial = parsedData.extracted_city;
+    }
+    if (parsedData.extracted_state && parsedData.extracted_state !== 'none') {
+        let extractedState = parsedData.extracted_state.toLowerCase();
+        if (extractedState.includes('oyo')) {
+            user.state_initial = 'Oyo';
+        } else {
+            user.state_initial = 'Lagos'; // Default
+        }
+    }
+    if (parsedData.extracted_budget && parsedData.extracted_budget !== 'none') {
+        user.budget_initial = parsedData.extracted_budget;
+    }
+    
+    return user;
+}
+
+function buildConfirmationMessage(user) {
+    const isService = user.current_flow === 'service_request';
+    const type = isService ? 'job' : 'purchase';
+    const requestType = isService ? 'service' : 'item';
+
+    const category = user.service_category;
+    const summary = user.description_summary;
+    const budgetDisplay = user.budget_initial || "Flexible Budget (TBD)";
+
+    let message = `*Got it!* You're requesting a *${category}* ${requestType} summarized as: _"${summary}"_.\n\n`;
+
+    message += `*Location:* ${user.city_initial ? user.city_initial + ', ' : ''}${user.state_initial} State\n`;
+    message += `*Budget/Price:* ${budgetDisplay}\n\n`;
+
+    message += `Does this look correct for your ${type} request?`;
+    
+    return message;
 }
 
 
@@ -921,5 +909,5 @@ app.post('/webhook', (req, res) => {
 app.listen(PORT, () => {
     console.log(`\nYourHelpa Server is listening on port ${PORT}`);
     console.log(`Webhook URL: https://yourhelpa-chatbot.onrender.com/webhook`);
-    console.log("✅ AI Intent Detection and Button UI Enabled.");
+    console.log("✅ Rich Media, Persona, and No-Silence Flow Enabled.");
 });
