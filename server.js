@@ -19,7 +19,7 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const GEMINI_MODEL = 'gemini-2.5-flash-preview-09-2025';
 
 // --- GOOGLE APPS SCRIPT CONFIGURATION (UPDATED URL) ---
-const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyayObttIKkjMFsem9SHQGfSSft6-MTmI8rKRYyudCmaC_kPLTlLnRTdBw0TU_5RFShitA/exec'; // Placeholder URL
+const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyayObttIKkjMFsem9SHQGfSSft6-MTmI8rKRYyudCmaC_kPLcPLTLnRTdBw0TU_5RFShitA/exec'; // Placeholder URL
 
 if (!VERIFY_TOKEN || !ACCESS_TOKEN || !PHONE_NUMBER_ID) {
     console.error("CRITICAL ERROR: WhatsApp environment variables are missing.");
@@ -77,9 +77,6 @@ const FLOW_STATES = {
     AWAIT_FINAL_CONFIRM: 'AWAIT_FINAL_CONFIRM', // User confirming the selected item/service
     PAYMENT_PENDING: 'PAYMENT_PENDING' // Transaction complete, awaiting payment
 };
-
-// Simplified getUserState and saveUser for brevity and focusing on the new logic
-// (These functions are copied from the previous step and handle error states gracefully)
 
 async function getUserState(phone) {
     try {
@@ -307,6 +304,18 @@ async function sendWhatsAppMessage(to, messagePayload) {
 }
 
 /**
+ * FIX: Helper function for sending simple text messages (was missing)
+ */
+async function sendTextMessage(to, text) {
+    if (!text) return;
+    await sendWhatsAppMessage(to, {
+        type: "text",
+        text: { body: text }
+    });
+}
+
+
+/**
  * Generates a WhatsApp Interactive Button Message for YES/NO confirmation.
  */
 function getConfirmationButtons(bodyText, yesId, noId, footerText, userPersona = 'lily') {
@@ -352,7 +361,7 @@ async function sendMainMenu(senderId, user, senderName) {
     }];
     
     // Send initial greeting text
-    await sendWhatsAppMessage(senderId, { type: "text", text: { body: welcomeText + "\n\nWhat can I help you find today? Choose an option:" } });
+    await sendTextMessage(senderId, welcomeText + "\n\nWhat can I help you find today? Choose an option:");
     
     // Send the interactive list menu
     const combinedSections = [{
@@ -485,7 +494,7 @@ async function sendPaymentLink(user, senderId) {
     
     const finalMessage = `${paymentPrompt}\n\n*Secure Payment Link (Escrow):*\n${mockMonnifyLink}\n\n*Transaction ID:* ${user.user_id}\n\nType MENU when payment is complete to see next steps.`;
 
-    await sendWhatsAppMessage(senderId, { type: "text", text: { body: finalMessage } });
+    await sendTextMessage(senderId, finalMessage);
 }
 
 
@@ -541,7 +550,7 @@ async function handleMessageFlow(senderId, senderName, message) {
             user.status = FLOW_STATES.MAIN_MENU; 
             await saveUser(user);
             const greeting = await generateAIResponse(`The user sent a greeting (e.g., 'hi'). Respond courteously, respectfully, and informally (Nigerian context) using the ${persona.name} persona, then ask them what they need help with today.`);
-            await sendTextMessage(senderId, greeting);
+            await sendTextMessage(senderId, greeting); // <-- FIX APPLIED HERE
             // Since the user already sent a greeting, jump into the detection flow if they also had a request, otherwise show menu.
             if (aiParsed.category) {
                  // Fall through to the AUTO_CONFIRM_REQUEST logic below
@@ -607,14 +616,14 @@ async function handleMessageFlow(senderId, senderName, message) {
                 user.status = FLOW_STATES.REQUEST_MATCHING;
                 await saveUser(user);
                 
-                await sendTextMessage(senderId, await generateAIResponse(`Location confirmed in ${user.city_initial}. Searching the Helpa database now... this is where we find the best providers for you!`, user.preferred_persona));
+                await sendTextMessage(senderId, await generateAIResponse(`Location confirmed in ${user.city_initial}. Searching the Helpa database now... this is where we find the best providers for you!`, user.preferred_persona)); // <-- FIX APPLIED HERE
                 await sendMatchCarouselList(user, senderId);
                 return;
 
             // Handle button click (Correction)
             } else if (intent === 'CORRECT_LOCATION' && !incomingText) {
                 // User clicked 'NO, Start Over' (or similar button)
-                 await sendTextMessage(senderId, await generateAIResponse(`Okay, no wahala. Type in your correct city and area now (e.g., 'Ikeja' or 'Saki').`, user.preferred_persona));
+                 await sendTextMessage(senderId, await generateAIResponse(`Okay, no wahala. Type in your correct city and area now (e.g., 'Ikeja' or 'Saki').`, user.preferred_persona)); // <-- FIX APPLIED HERE
                  // User status remains AWAIT_LOCATION_CONFIRM
                  return;
             
@@ -635,12 +644,12 @@ async function handleMessageFlow(senderId, senderName, message) {
                 user.status = FLOW_STATES.REQUEST_MATCHING;
                 await saveUser(user);
                 
-                await sendTextMessage(senderId, await generateAIResponse(`Location successfully updated to *${user.city_initial}, ${user.state_initial} State*. Searching the Helpa database for ${user.service_category} now.`, user.preferred_persona));
+                await sendTextMessage(senderId, await generateAIResponse(`Location successfully updated to *${user.city_initial}, ${user.state_initial} State*. Searching the Helpa database for ${user.service_category} now.`, user.preferred_persona)); // <-- FIX APPLIED HERE
                 await sendMatchCarouselList(user, senderId);
                 return;
             } else {
                  // Fallthrough for unexpected input
-                await sendTextMessage(senderId, await generateAIResponse(`Biko, I'm expecting you to confirm your location or type a new one. Try again or type MENU.`, user.preferred_persona));
+                await sendTextMessage(senderId, await generateAIResponse(`Biko, I'm expecting you to confirm your location or type a new one. Try again or type MENU.`, user.preferred_persona)); // <-- FIX APPLIED HERE
                 return;
             }
         }
@@ -689,7 +698,7 @@ async function handleMessageFlow(senderId, senderName, message) {
         // --- 9. DEFAULT FALLBACK / UNKNOWN INPUT ---
         if (intent === 'UNKNOWN' || (user.status !== FLOW_STATES.MAIN_MENU && !interactiveId)) {
             const fallbackPrompt = await generateAIResponse(`The user sent: "${incomingText}". I didn't quite catch that. Biko, I am currently waiting for you to select an option from a button or list, or type a clear request/MENU. Please try again.`, user.preferred_persona);
-            await sendTextMessage(senderId, fallbackPrompt);
+            await sendTextMessage(senderId, fallbackPrompt); // <-- FIX APPLIED HERE
         }
 
 
@@ -699,7 +708,7 @@ async function handleMessageFlow(senderId, senderName, message) {
         let user = await getUserState(senderId);
         user.status = FLOW_STATES.MAIN_MENU;
         await saveUser(user);
-        await sendTextMessage(senderId, "Biko, something big just went wrong! A critical system error occurred. Please try again later. Type MENU to reset.");
+        await sendTextMessage(senderId, "Biko, something big just went wrong! A critical system error occurred. Please try again later. Type MENU to reset."); // <-- FIX APPLIED HERE
     }
 }
 
