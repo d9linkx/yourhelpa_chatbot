@@ -392,16 +392,31 @@ async function sendMainMenu(senderId, user, senderName, isFirstTime = false) {
 /**
  * Prompts the user to confirm or correct their location.
  */
-async function promptForLocation(senderId, user, isServiceFlow) {
-    const serviceType = isServiceFlow ? 'service' : 'item';
-    
-    // Use AI to generate a contextual, friendly prompt
-    const aiPromptText = `I see you wanna ${isServiceFlow ? 'hire a pro' : 'find an item'}! Just to make sure I search right, can you confirm the location you need the ${serviceType} in?`;
+async function promptForLocation(senderId, user, isServiceFlow, contextualPrompt) {
+    const persona = user.preferred_persona;
 
-    const locationPrompt = await generateAIResponse(
-        aiPromptText, 
-        user.preferred_persona
+    // AI text is now EXACTLY tied to the user’s choice
+    const aiText = await generateAIResponse(
+        contextualPrompt,
+        persona
     );
+
+    // Set correct next flow
+    user.current_flow = isServiceFlow 
+        ? "AWAIT_SERVICE_LOCATION_CONFIRM" 
+        : "AWAIT_BUYER_LOCATION_CONFIRM";
+
+    await saveUser(user);
+
+    await sendWhatsAppMessage(senderId, getConfirmationButtons(
+        aiText,
+        "CONFIRM_LOCATION",
+        "CORRECT_LOCATION",
+        `Current location: ${user.city_initial}, ${user.state_initial}`,
+        persona
+    ));
+}
+
     
     const currentFlow = isServiceFlow ? 'AWAIT_SERVICE_LOCATION_CONFIRM' : 'AWAIT_BUYER_LOCATION_CONFIRM';
     user.current_flow = currentFlow; // Set state to AWAIT_LOCATION_CONFIRM
