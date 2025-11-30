@@ -475,17 +475,32 @@ async function handleMessageFlow(senderId, senderName, message) {
         // -----------------------------------------------------------
         // 3. FALLBACK / UNKNOWN INPUT (if not handled by other flow states later)
         // -----------------------------------------------------------
-        if (user.current_flow === 'MAIN_MENU') {
-            const isButtonOrCommand = interactiveId || intent === 'MENU' || intent === 'GREETING';
-            if (!isButtonOrCommand) {
-                 const fallbackPrompt = await generateAIResponse("I'm not sure how to handle that right now. Let's stick to the options for a moment.", user.preferred_persona);
-                await sendTextMessage(senderId, fallbackPrompt);
-                
-                // Revert to main menu view
-                await sendMainMenu(senderId, user, senderName, false);
-                return;
-            }
-        }
+        if (user.current_flow === 'MAIN_MENU' && intent.startsWith('OPT_')) {
+
+    // Service request flow
+    if (intent === 'OPT_FIND_SERVICE') {
+        user.selected_option = "SERVICE";
+        await promptForLocation(
+            senderId,
+            user,
+            true,  // isServiceFlow
+            "Nice! Let's get you the right service provider. First, confirm the location where you need the help."
+        );
+        return;
+    }
+
+    // Product item flow
+    if (intent === 'OPT_BUY_ITEM') {
+        user.selected_option = "ITEM";
+        await promptForLocation(
+            senderId,
+            user,
+            false, // isServiceFlow
+            "Got you! I’ll help you find the item. Before I search, can you confirm the location you need it delivered or inspected?"
+        );
+        return;
+    }
+
 
 
     } catch (error) {
