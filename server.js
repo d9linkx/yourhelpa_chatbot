@@ -34,7 +34,7 @@ if (!APPS_SCRIPT_URL) {
 
 
 // =========================================================================
-// PERSONA & RICH MEDIA CONFIGURATION (Updated Name: Bukky)
+// PERSONA & RICH MEDIA CONFIGURATION 
 // =========================================================================
 
 const PERSONAS = {
@@ -61,11 +61,14 @@ function getSystemInstruction(personaName) {
     
     return `
         You are ${persona.name}, a WhatsApp-based conversational marketplace operating exclusively in **Nigeria**, currently serving users in **Lagos State** and **Oyo State**.
-        Your persona is: ${persona.tone}.
+        Your persona is: **${persona.tone}**.
         Your goal is to facilitate simple and safe transactions for both **Services (Hiring)** and **Items (Buying/Selling)**.
-        You must be concise and action-oriented. All responses must be professional, warm, and use **clean, standard English**.
-        
-        **CRITICAL AI FLOW RULE:** Maintain excellent conversational memory and flow. Do not repeat previous statements or use overly robotic language; act as a natural, helpful human assistant. Use context to make your responses seamless.
+
+        **CRITICAL AI FLOW RULES (CONVERSATION STYLE):**
+        1. **Conversational Memory:** You MUST remember the immediate context of the conversation and the user's last action.
+        2. **Avoid Repetition:** DO NOT repeat phrases, introductions, or standard greetings (like "Got it!" or "Thank you for the information") in a robotic way. Integrate acknowledgement subtly.
+        3. **Conciseness:** Be extremely brief. Aim for 1-3 highly informative sentences unless a detailed explanation is specifically requested (e.g., for payment).
+        4. **Action-Oriented:** Every response should clearly guide the user to the next logical step (e.g., "Now, what is the best location for the service?").
 
         **CRITICAL RULE (No Slang/Jargon):** Do not use any Nigerian Pidgin English, slang (e.g., 'biko', 'wahala', 'how far'), or overly dramatic language. Use clear, formal-but-friendly English.
         
@@ -494,7 +497,8 @@ async function sendMatchCarouselList(user, senderId) {
         }))
     }];
 
-    const replyText = await generateAIResponse(`The user is waiting for the matching result for ${category} in ${user.city_initial}. Respond excitedly (using the ${persona.name} persona) that you have found the top 5 verified ${providerRole}s nearest to them and they should choose one from the list below. Keep it max 2 sentences.`, user.preferred_persona);
+    // Enhanced prompt for smoother, less repetitive language
+    const replyText = await generateAIResponse(`The user is waiting for the matching result for ${category} in ${user.city_initial}. Announce (using the ${persona.name} persona) that you have found the top 5 verified ${providerRole}s nearest to them and they should choose one from the list below. Be brief and encouraging.`, user.preferred_persona);
     
     // SAVE STATE: Store matches and update status
     user.match_data = JSON.stringify(matches);
@@ -526,7 +530,8 @@ async function sendPaymentLink(user, senderId) {
     // Mock Monnify Payment Link
     const mockMonnifyLink = `https://pay.monnify.com/escrow/payment/${user.user_id}`;
     
-    const paymentPrompt = await generateAIResponse(`The user has confirmed the final booking for the selected match. As ${persona.name}, confirm that you have immediately notified the ${user.current_flow === 'service_request' ? 'Helpa' : 'Seller'} and that the user must now make the payment using the *Monnify Escrow* link below. Explain briefly (max 3 sentences) that the money is held safely until the service/item is delivered and approved by them.`, user.preferred_persona);
+    // Enhanced prompt for smoother, less repetitive language
+    const paymentPrompt = await generateAIResponse(`The user has confirmed the final booking. As ${persona.name}, quickly state that you've notified the ${user.current_flow === 'service_request' ? 'Helpa' : 'Seller'} and the user must now use the *Monnify Escrow* link below to pay. Briefly explain (max 2 sentences) why escrow is safe (money is held until they approve the service/item).`, user.preferred_persona);
     
     // Updated to use clean English for explanation
     const finalMessage = `${paymentPrompt}\n\n*Secure Payment Link (Escrow):*\n${mockMonnifyLink}\n\n*Transaction ID:* ${user.user_id}\n\nType MENU when payment is complete to see next steps.`;
@@ -574,7 +579,7 @@ async function handleMessageFlow(senderId, senderName, message) {
             // Handle specific menu clicks that do not reset the flow entirely
             if (intent === 'OPT_REGISTER_ME' || intent === 'OPT_MY_ACTIVE' || intent === 'OPT_SUPPORT' || intent === 'OPT_CHANGE_PERSONA') {
                  // Send a temporary message indicating these options are TBD, then show menu
-                 await sendTextMessage(senderId, `*${persona.name}*: That feature is coming soon! For now, let's focus on finding you a service or item. Type MENU to see the options again.`);
+                 await sendTextMessage(senderId, await generateAIResponse(`That feature is coming soon! Let's focus on connecting you with a service or item for now. Type MENU to see the options again.`, user.preferred_persona));
                  await sendMainMenu(senderId, user, senderName);
                  return;
             }
@@ -588,7 +593,8 @@ async function handleMessageFlow(senderId, senderName, message) {
         if (user.status === FLOW_STATES.NEW || intent === 'GREETING') {
             
             // 3a. Generate ONE conversational greeting
-            const greetingText = await generateAIResponse(`The user sent a greeting (e.g., 'hi'). Respond courteously, respectfully, and informally (using the ${persona.name} persona with clean, standard English), and ask them what they need help with today.`, user.preferred_persona);
+            // Enhanced prompt for smoother, less robotic language
+            const greetingText = await generateAIResponse(`The user sent a greeting (e.g., 'hi'). Respond courteously and warmly (using the ${persona.name} persona). Since this is the first interaction, ask them what they need help with today and mention the services you offer (Hiring professionals or Buying/Finding items). Be very conversational.`, user.preferred_persona);
             await sendTextMessage(senderId, greetingText);
             
             // 3b. Update status and save
@@ -624,7 +630,10 @@ async function handleMessageFlow(senderId, senderName, message) {
             // Build the confirmation message
             const categoryToConfirm = (user.service_category.includes('General') && user.description_summary) ? user.description_summary : user.service_category;
             
-            let confirmationBody = `Got it! You are looking for a *${categoryToConfirm}* ${reqType}. Is this correct?`;
+            // Use AI to generate the natural-sounding confirmation text
+            const aiConfirmation = await generateAIResponse(`The user is requesting a ${categoryToConfirm} ${reqType}. As ${persona.name}, acknowledge this and politely ask for confirmation. Be conversational and very brief.`, user.preferred_persona);
+
+            let confirmationBody = `${aiConfirmation}\n\n*Request Summary:* ${categoryToConfirm}`;
             
             user.status = FLOW_STATES.AUTO_CONFIRM_REQUEST;
             await saveUser(user);
@@ -638,7 +647,9 @@ async function handleMessageFlow(senderId, senderName, message) {
         if (user.status === FLOW_STATES.AUTO_CONFIRM_REQUEST && intent === 'CONFIRM_REQUEST') {
             
             const mockLocation = user.city_initial || 'Ibadan';
-            const locationPrompt = await generateAIResponse(`The user confirmed the request for: ${user.service_category}. As ${persona.name}, ask them to confirm their location, defaulting to their last known location or the location you detected: *${mockLocation}, ${user.state_initial} State*. Ask them to confirm this, or type in a new city/area. Use clean, clear English.`, user.preferred_persona);
+            
+            // Enhanced prompt for smoother, less repetitive language
+            const locationPrompt = await generateAIResponse(`The user confirmed the request. As ${persona.name}, ask them to confirm their current location or provide a new one. Their current known location is *${mockLocation}, ${user.state_initial} State*. Be brief and action-oriented.`, user.preferred_persona);
             
             const bodyText = `${locationPrompt}\n\n*Current Location:* ${mockLocation}, ${user.state_initial} State`;
             
@@ -739,6 +750,7 @@ async function handleMessageFlow(senderId, senderName, message) {
 
         // --- 9. DEFAULT FALLBACK / UNKNOWN INPUT ---
         if (intent === 'UNKNOWN' || (user.status !== FLOW_STATES.MAIN_MENU && !interactiveId)) {
+            // Enhanced prompt for smoother, less robotic language
             const fallbackPrompt = await generateAIResponse(`The user sent: "${incomingText}". I didn't quite catch that. I am currently waiting for you to select an option from a button or list, or type a clear request or MENU. Please try again.`, user.preferred_persona);
             await sendTextMessage(senderId, fallbackPrompt); 
         }
