@@ -363,18 +363,21 @@ function getConfirmationButtons(bodyText, yesId, noId, footerText, userPersona =
 
 /**
  * Sends the Main Menu.
+ * * FIX: This function is modified to only send *one* interactive message.
+ * The introductory text is integrated into the interactive body.
  */
 async function sendMainMenu(senderId, user, senderName) {
     const persona = PERSONAS[user.preferred_persona.toUpperCase()] || PERSONAS.BUKKY; // Updated default persona
     
     // Check if the user is in a NEW state (first time hitting main menu after greeting)
-    let welcomeText;
+    let bodyText;
     if (user.status === FLOW_STATES.NEW) {
-        // Use a generic welcome that the AI generates in handleMessageFlow
-        welcomeText = `${persona.name} here! 👋 Welcome, *${senderName}*. I'm here to connect you with the best services and items in Nigeria.`;
+        // If coming from NEW, the AI greeting was just sent (Message 1). 
+        // We now only need the action-oriented prompt to use the menu.
+        bodyText = `Welcome back, *${senderName}*! We are here to connect you with the best services and items in Nigeria. What can I help you find today? Please choose an option from the menu below.`;
     } else {
-        // Use a returning welcome
-        welcomeText = `${persona.name} here! 👋 Welcome back, *${senderName}*. I'm here to connect you with the best services and items in Nigeria.`;
+        // Standard menu return
+        bodyText = `Welcome back, *${senderName}*! I'm ready for your next request. Please choose from the options below.`;
     }
 
     // Quick Replies for the Menu (used inside the List Message)
@@ -386,9 +389,6 @@ async function sendMainMenu(senderId, user, senderName) {
     if (user.role === 'unassigned') {
          listRows.push({ id: "OPT_REGISTER_ME", title: "🌟 Become a Provider" }); 
     }
-    
-    // Send initial welcome message *before* the interactive list message
-    await sendTextMessage(senderId, welcomeText + "\n\nWhat can I help you find today? Please choose an option from the menu below.");
     
     // Logic for switching persona now correctly identifies if Bukky or Kore is active
     const otherPersonaName = persona.name === 'Bukky' ? 'Kore' : 'Bukky';
@@ -405,18 +405,21 @@ async function sendMainMenu(senderId, user, senderName) {
         ]
     }];
     
-    
-    // Send the interactive list menu
+    // *******************************************************************
+    // FIX APPLIED HERE: Combining the text message into the List Body.
+    // The previous sendTextMessage(senderId, welcomeText + ...) is REMOVED.
+    // *******************************************************************
     const menuPayload = {
         type: "interactive",
         interactive: {
             type: "list",
             header: { type: "text", text: `${persona.name}'s Main Menu` },
-            body: { text: "Use the list below for quick access to everything!" },
+            body: { text: bodyText }, // Use the generated bodyText here
             action: {
                 button: "View Options",
                 sections: listSections
-            }
+            },
+            footer: { text: "Use the list below for quick access to everything!" }
         }
     };
     
@@ -603,10 +606,15 @@ async function handleMessageFlow(senderId, senderName, message) {
             
             // 3c. If the user only sent a greeting, show the menu.
             if (!aiParsed.category && aiParsed.intent === 'GREETING') {
+                // Now, sendMainMenu is cleaner and only sends one message.
                 await sendMainMenu(senderId, user, senderName);
                 return;
             }
             // If the user included a request (e.g., "Hi, cleaner"), execution will fall through to step 4 below.
+            // We should ensure we return here if we are not falling through to step 4, just to be safe.
+            if (!aiParsed.category) {
+                 return;
+            }
         }
         
         // --- 4. ADVANCED REQUEST DETECTION (Start of proactive flow) ---
