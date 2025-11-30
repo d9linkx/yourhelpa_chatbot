@@ -77,20 +77,8 @@ function getSystemInstruction(personaName) {
 // GOOGLE APPS SCRIPT & USER STATE MANAGEMENT 
 // =========================================================================
 
-// State variables are now heavily used to track the advanced flow stage
-const FLOW_STATES = {
-    NEW: 'NEW',
-    MAIN_MENU: 'MAIN_MENU',
-    AUTO_CONFIRM_REQUEST: 'AUTO_CONFIRM_REQUEST', 
-    AWAIT_LOCATION_CONFIRM: 'AWAIT_LOCATION_CONFIRM', 
-    REQUEST_MATCHING: 'REQUEST_MATCHING', 
-    AWAIT_MATCH_SELECTION: 'AWAIT_MATCH_SELECTION', 
-    AWAIT_FINAL_CONFIRM: 'AWAIT_FINAL_CONFIRM', 
-    PAYMENT_PENDING: 'PAYMENT_PENDING' 
-};
-
 /**
- * Retrieves the user's state from the Apps Script backend. (Simulated)
+ * Retrieves the user's state from the Apps Script backend.
  */
 async function getUserState(phone) {
     try {
@@ -109,7 +97,9 @@ async function getUserState(phone) {
             if (!user.preferred_persona) user.preferred_persona = 'bukky'; 
             if (!user.city_initial) user.city_initial = 'Ibadan';
             if (!user.state_initial) user.state_initial = 'Oyo';
-            if (!user.status) user.status = FLOW_STATES.NEW; 
+            // Keeping current_flow for basic tracking
+            if (!user.current_flow) user.current_flow = 'NEW';
+            
             return user;
         } else {
             throw new Error("Apps Script returned an unsuccessful response.");
@@ -125,8 +115,7 @@ async function getUserState(phone) {
             name: '',
             city: 'Ibadan', 
             state_initial: 'Oyo',
-            current_flow: '',
-            status: FLOW_STATES.NEW, 
+            current_flow: 'NEW',
             preferred_persona: 'bukky',
             row_index: 0,
             service_category: '', 
@@ -135,13 +124,12 @@ async function getUserState(phone) {
             budget_initial: '', 
             item_name: '', 
             item_description: '',
-            match_data: '{}'
         };
     }
 }
 
 /**
- * Saves the user's state to the Apps Script backend. (Simulated)
+ * Saves the user's state to the Apps Script backend.
  */
 async function saveUser(user) {
     try {
@@ -159,7 +147,7 @@ async function saveUser(user) {
         }
         
         if (response.data.success) {
-            console.log(`✅ User ${user.phone} state updated to: ${user.status}`);
+            console.log(`✅ User ${user.phone} state updated to: ${user.current_flow}`);
         } else {
             console.error("🚨 APPS SCRIPT FAILURE (SAVE_STATE): Unsuccessful or malformed response. State NOT saved.", response.data.error || response.data);
         }
@@ -171,10 +159,10 @@ async function saveUser(user) {
 
 
 // =========================================================================
-// GEMINI ADVANCED AI INTENT & PARSING 
+// GEMINI BASIC AI INTENT & PARSING 
 // =========================================================================
 
-const ADVANCED_INTENT_SCHEMA = {
+const BASIC_INTENT_SCHEMA = {
     type: "OBJECT",
     properties: {
         intent: {
@@ -185,7 +173,6 @@ const ADVANCED_INTENT_SCHEMA = {
                 "SERVICE_REQUEST", 
                 "PRODUCT_REQUEST", 
                 "MENU", 
-                "LOCATION_CHANGE", // New intent for location input
                 "UNKNOWN" 
             ]
         },
@@ -196,29 +183,25 @@ const ADVANCED_INTENT_SCHEMA = {
         description_summary: { 
             type: "STRING", 
             description: "A brief summary of the request details, context, or needed location, extracted from the message. Empty string if not applicable." 
-        },
-        location_city: {
-            type: "STRING",
-            description: "A Nigerian city or area mentioned by the user (e.g., 'Ikeja', 'Ibadan', 'Lekki'). Empty string if not mentioned."
         }
     },
-    required: ["intent", "category", "description_summary", "location_city"]
+    required: ["intent", "category", "description_summary"]
 };
 
 
 /**
- * Uses Gemini to detect intent and parse request details in one go (JSON Mode).
+ * Uses Gemini to detect intent and parse request details.
  */
-async function getAdvancedIntentAndParse(input, userPersona = 'bukky') { 
+async function getBasicIntentAndParse(input) { 
     
-    if (!GEMINI_API_KEY) return { intent: 'UNKNOWN', category: '', description_summary: '', location_city: '' };
+    if (!GEMINI_API_KEY) return { intent: 'UNKNOWN', category: '', description_summary: '' };
     
     // Prioritize explicit button clicks/keywords
     if (input.startsWith('OPT_') || input.startsWith('CONFIRM_') || input.startsWith('CORRECT_') || input.startsWith('SELECT_')) {
-        return { intent: input, category: '', description_summary: '', location_city: '' };
+        return { intent: input, category: '', description_summary: '' };
     }
     if (input.toUpperCase() === 'MENU' || input.toUpperCase() === 'BACK') {
-        return { intent: 'MENU', category: '', description_summary: '', location_city: '' };
+        return { intent: 'MENU', category: '', description_summary: '' };
     }
 
     // --- Using Gemini API for structured JSON output ---
@@ -232,10 +215,9 @@ async function getAdvancedIntentAndParse(input, userPersona = 'bukky') {
         - SERVICE_REQUEST: 'I need a plumber', 'carpenter needed'.
         - PRODUCT_REQUEST: 'I want a phone', 'sell me a mattress'.
         - MENU: User asked for MENU or BACK.
-        - LOCATION_CHANGE: User is responding with only a location or a request to change location (e.g., 'Change to Lekki' or 'Saki').
         - UNKNOWN: Anything else.
         
-        Extract the 'category' (e.g., 'Plumber'), a 'description_summary' (brief context/details), and 'location_city' (a Nigerian city like 'Ikeja'). Use empty string "" if not found.
+        Extract the 'category' (e.g., 'Plumber') and a 'description_summary' (brief context/details). Use empty string "" if not found.
         Your entire output MUST be a JSON object adhering to the provided schema.
     `;
 
@@ -243,7 +225,7 @@ async function getAdvancedIntentAndParse(input, userPersona = 'bukky') {
         contents: [{ parts: [{ text: parsingInstruction }] }],
         generationConfig: { 
             responseMimeType: "application/json",
-            responseSchema: ADVANCED_INTENT_SCHEMA,
+            responseSchema: BASIC_INTENT_SCHEMA,
         },
     };
 
@@ -257,8 +239,8 @@ async function getAdvancedIntentAndParse(input, userPersona = 'bukky') {
         return parsed;
 
     } catch (error) {
-        console.error("Gemini Advanced Parsing API Error:", error.response?.data || error.message);
-        return { intent: 'UNKNOWN', category: '', description_summary: '', location_city: '' };
+        console.error("Gemini Basic Parsing API Error:", error.response?.data || error.message);
+        return { intent: 'UNKNOWN', category: '', description_summary: '' };
     }
 }
 
@@ -300,7 +282,6 @@ async function generateAIResponse(text, userPersona = 'bukky') {
 const META_API_URL = `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`;
 
 async function sendWhatsAppMessage(to, messagePayload) {
-    // ... (Omitted for brevity, assumed unchanged)
     try {
         const finalPayload = {
             messaging_product: "whatsapp",
@@ -395,9 +376,9 @@ async function sendMainMenu(senderId, user, senderName, isFirstTime = false) {
 }
 
 /**
- * Handles the AI-powered matching process and presents the carousel-like list.
+ * Handles the simple matching process and presents the list.
  */
-async function sendMatchCarouselList(user, senderId) {
+async function sendMatchList(user, senderId) {
     const isService = user.current_flow === 'service_request';
     const flowType = isService ? 'Service Request (Hiring)' : 'Item Purchase (Buying)';
     const category = user.service_category;
@@ -424,7 +405,7 @@ async function sendMatchCarouselList(user, senderId) {
         }));
 
 
-    // --- Build the List Message (Carousel-like Selection) ---
+    // --- Build the List Message (Selection) ---
     const listSections = [{
         title: `Top 5 Verified ${providerRole}s near ${user.city_initial}`,
         rows: matches.map((match, index) => ({
@@ -434,11 +415,10 @@ async function sendMatchCarouselList(user, senderId) {
         }))
     }];
 
-    const replyText = await generateAIResponse(`The user is waiting for the matching result for ${category} in ${user.city_initial}. Announce (using the ${persona.name} persona) that you have found the top 5 verified ${providerRole}s nearest to them and they should choose one from the list below. Be brief and encouraging.`, user.preferred_persona);
+    const replyText = await generateAIResponse(`I've found the top 5 verified ${providerRole}s nearest to you for ${category} in ${user.city_initial}. Choose the best match from the list below!`, user.preferred_persona);
     
-    // SAVE STATE: Store matches and update status
-    user.match_data = JSON.stringify(matches);
-    user.status = FLOW_STATES.AWAIT_MATCH_SELECTION;
+    // Simple state change to track list sent
+    user.current_flow = 'await_match_selection';
     await saveUser(user);
 
     const listPayload = {
@@ -457,193 +437,6 @@ async function sendMatchCarouselList(user, senderId) {
     await sendWhatsAppMessage(senderId, listPayload);
 }
 
-async function sendPaymentLink(user, senderId) {
-    const persona = PERSONAS[user.preferred_persona.toUpperCase()];
-    const mockMonnifyLink = `https://pay.monnify.com/escrow/payment/${user.user_id}`;
-    
-    const paymentPrompt = await generateAIResponse(`The user has confirmed the final booking. As ${persona.name}, quickly state that you've notified the ${user.current_flow === 'service_request' ? 'Helpa' : 'Seller'} and the user must now use the *Monnify Escrow* link below to pay. Briefly explain (max 2 sentences) why escrow is safe (money is held until they approve the service/item).`, user.preferred_persona);
-    
-    const finalMessage = `${paymentPrompt}\n\n*Secure Payment Link (Escrow):*\n${mockMonnifyLink}\n\n*Transaction ID:* ${user.user_id}\n\nType MENU when payment is complete to see next steps.`;
-
-    await sendTextMessage(senderId, finalMessage);
-}
-
-
-// =========================================================================
-// STATE HANDLER FUNCTIONS (The brain of the intelligent flow)
-// =========================================================================
-
-/**
- * Resets flow data and sends the main menu. Used for explicit MENU/BACK commands.
- */
-async function handleFlowReset(senderId, user, senderName, intent) {
-    
-    if (['OPT_REGISTER_ME', 'OPT_MY_ACTIVE', 'OPT_SUPPORT', 'OPT_CHANGE_PERSONA'].includes(intent)) {
-        // --- Handle Non-Flow Menu Options ---
-        let tempMessage;
-        const persona = PERSONAS[user.preferred_persona.toUpperCase()];
-
-        if (intent === 'OPT_CHANGE_PERSONA') {
-            const newPersonaKey = persona.name === 'Bukky' ? 'kore' : 'bukky';
-            user.preferred_persona = newPersonaKey; 
-            const newPersonaName = PERSONAS[newPersonaKey.toUpperCase()].name;
-            tempMessage = await generateAIResponse(`Hello, I'm ${newPersonaName}! I'm your new helper, and I'm ready to find you the best deals.`, newPersonaKey);
-        } else {
-            tempMessage = await generateAIResponse(`That feature is coming soon! Let's focus on connecting you with a service or item for now.`, user.preferred_persona);
-        }
-        
-        await sendTextMessage(senderId, tempMessage);
-        
-    } else if (intent === 'CORRECT_REQUEST') {
-        // Simple conversational acknowledgement for correction/reset
-        await sendTextMessage(senderId, await generateAIResponse("No problem! Let's clear the air and start fresh. What would you like to do now?", user.preferred_persona)); 
-    }
-    
-    // Reset State and send Menu
-    user.status = FLOW_STATES.MAIN_MENU; 
-    user.current_flow = ''; 
-    await saveUser(user);
-    await sendMainMenu(senderId, user, senderName, false);
-}
-
-
-/**
- * Handles the initial state and proactive requests.
- */
-async function handleNewOrMenuState(senderId, user, senderName, aiParsed) {
-    const intent = aiParsed.intent;
-    const isFirstTimeUser = user.status === FLOW_STATES.NEW;
-    
-    // --- Rule 1: First-time user or simple greeting gets the menu ---
-    if (isFirstTimeUser || intent === 'GREETING') {
-        user.status = FLOW_STATES.MAIN_MENU; 
-        await saveUser(user);
-        
-        // Only send menu if no request was embedded in the greeting
-        if (!aiParsed.category) {
-            await sendMainMenu(senderId, user, senderName, isFirstTimeUser);
-            return;
-        }
-        // If request *was* embedded (e.g., "Hi, I need a plumber"), fall through to start flow below.
-    }
-    
-    // --- Rule 2: Proactive Request (SERVICE_REQUEST, PRODUCT_REQUEST, or explicit OPT button) ---
-    if (intent === 'SERVICE_REQUEST' || intent === 'PRODUCT_REQUEST' || intent === 'OPT_FIND_SERVICE' || intent === 'OPT_BUY_ITEM') {
-        
-        const isService = (intent === 'OPT_FIND_SERVICE' || intent === 'SERVICE_REQUEST');
-        user.current_flow = isService ? 'service_request' : 'buyer_flow';
-        
-        // Use AI-parsed category or default from button
-        user.service_category = aiParsed.category || (isService ? 'General Service Request' : 'General Item Request'); 
-        
-        // Capture initial details if provided
-        if (aiParsed.description_summary) user.description_summary = aiParsed.description_summary;
-        if (aiParsed.location_city) user.city_initial = aiParsed.location_city;
-
-        const reqType = isService ? 'service' : 'item';
-        const categoryToConfirm = (user.service_category.includes('General') && user.description_summary) 
-            ? user.description_summary : user.service_category;
-        
-        const aiConfirmation = await generateAIResponse(`You're requesting a ${categoryToConfirm} ${reqType}. Is this correct?`, user.preferred_persona);
-
-        let confirmationBody = `${aiConfirmation}\n\n*Request Summary:* ${categoryToConfirm}`;
-        
-        user.status = FLOW_STATES.AUTO_CONFIRM_REQUEST;
-        await saveUser(user);
-        
-        const confirmationPayload = getConfirmationButtons(confirmationBody, "CONFIRM_REQUEST", "CORRECT_REQUEST", `Confirming your ${reqType} request.`, user.preferred_persona);
-        await sendWhatsAppMessage(senderId, confirmationPayload);
-        return;
-    }
-    
-    // Fallback if not a greeting or request (e.g., random text in NEW state)
-    await handleDefaultOrUnknown(senderId, user);
-}
-
-
-/**
- * Handles the location confirmation and correction phase.
- */
-async function handleAwaitingLocation(senderId, user, aiParsed, incomingText) {
-    const persona = PERSONAS[user.preferred_persona.toUpperCase()];
-
-    // --- Action 1: CONFIRM_LOCATION button clicked ---
-    if (aiParsed.intent === 'CONFIRM_LOCATION') {
-        user.status = FLOW_STATES.REQUEST_MATCHING;
-        await saveUser(user);
-        
-        await sendTextMessage(senderId, await generateAIResponse(`Location confirmed in ${user.city_initial}. Searching the database now. Hang tight while I find the best matches for you!`, user.preferred_persona)); 
-        await sendMatchCarouselList(user, senderId);
-        return;
-    }
-    
-    // --- Action 2: CORRECTION / TEXT INPUT / LOCATION_CHANGE intent ---
-    if (aiParsed.intent === 'CORRECT_LOCATION' || aiParsed.intent === 'LOCATION_CHANGE' || incomingText) {
-        
-        let newLocation = incomingText || aiParsed.location_city;
-        
-        if (newLocation && newLocation !== user.city_initial) {
-            
-            // AI-powered city/state update
-            const lowerLocation = newLocation.toLowerCase();
-            user.city_initial = newLocation.split(',')[0].trim();
-            
-            if (lowerLocation.includes('lagos') || lowerLocation.includes('ikeja') || lowerLocation.includes('lekki') || lowerLocation.includes('surulere')) {
-                user.state_initial = 'Lagos';
-            } else if (lowerLocation.includes('ibadan') || lowerLocation.includes('oyo')) {
-                user.state_initial = 'Oyo';
-            } else {
-                user.state_initial = 'Lagos'; // Default to Lagos if ambiguous
-            }
-            
-            user.status = FLOW_STATES.REQUEST_MATCHING;
-            await saveUser(user);
-            
-            await sendTextMessage(senderId, await generateAIResponse(`Location successfully updated to *${user.city_initial}, ${user.state_initial} State*. Now searching for the best deals on ${user.service_category}.`, user.preferred_persona)); 
-            await sendMatchCarouselList(user, senderId);
-            return;
-
-        } else if (aiParsed.intent === 'CORRECT_LOCATION') {
-            // User clicked correct location but didn't provide text
-             await sendTextMessage(senderId, await generateAIResponse(`Understood. Please type in your correct city and area now (e.g., 'Ikeja' or 'Saki').`, user.preferred_persona)); 
-             return;
-        }
-    }
-    
-    // Fallback for unexpected input
-    await sendTextMessage(senderId, await generateAIResponse(`I am currently waiting for you to *confirm* your location or *type* a new city/area. Please try again.`, user.preferred_persona)); 
-}
-
-
-/**
- * Handles unknown or unexpected messages for the current state.
- */
-async function handleDefaultOrUnknown(senderId, user) {
-    let guidingMessage;
-    
-    switch (user.status) {
-        case FLOW_STATES.AWAIT_MATCH_SELECTION:
-            guidingMessage = "I need you to select one of the matches from the list I sent. Please scroll up and pick one, or type MENU to restart.";
-            break;
-        case FLOW_STATES.AWAIT_FINAL_CONFIRM:
-            guidingMessage = "I'm waiting for your final confirmation before booking the Helpa/Seller. Please use the buttons provided, or type MENU to start over.";
-            break;
-        case FLOW_STATES.PAYMENT_PENDING:
-            guidingMessage = "I'm waiting for your payment to be confirmed through Monnify. Once done, type MENU to see your active job.";
-            break;
-        case FLOW_STATES.AUTO_CONFIRM_REQUEST:
-            guidingMessage = "I'm waiting for you to confirm or correct your request summary using the buttons. Please select one.";
-            break;
-        default:
-            guidingMessage = "I didn't quite catch that. Please type MENU to see the main options or send a clear request like 'plumber near Lekki'.";
-            break;
-    }
-    
-    const fallbackPrompt = await generateAIResponse(guidingMessage, user.preferred_persona);
-    await sendTextMessage(senderId, fallbackPrompt); 
-}
-
-
 // =========================================================================
 // MAIN MESSAGE ROUTER 
 // =========================================================================
@@ -658,112 +451,146 @@ async function handleMessageFlow(senderId, senderName, message) {
         let interactiveId = message.interactive?.button_reply?.id || message.interactive?.list_reply?.id || '';
         
         let flowInput = interactiveId || incomingText.trim();
-
-        // --- 1. AI INTENT & PARSING ---
-        let aiParsed = await getAdvancedIntentAndParse(flowInput, user.preferred_persona);
+        let aiParsed = await getBasicIntentAndParse(flowInput);
         const intent = aiParsed.intent;
-
-        console.log(`[Flow] Detected Intent: ${intent} | Current Status: ${user.status}`);
+        const persona = PERSONAS[user.preferred_persona.toUpperCase()];
         
-        // --- 2. UNIVERSAL FLOW BREAK / MENU RESET ---
-        // This handles all explicit resets (MENU, BACK, CORRECT_REQUEST) and non-flow OPT buttons.
-        if (intent.startsWith('MENU') || intent === 'CORRECT_REQUEST' || intent.startsWith('OPT_')) {
-            // Note: handleFlowReset automatically saves state and sends the menu.
-            await handleFlowReset(senderId, user, senderName, intent);
+        console.log(`[Flow] Detected Intent: ${intent} | Current Flow: ${user.current_flow}`);
+
+        // --- 1. CORE MENU/GREETING HANDLING ---
+        if (user.current_flow === 'NEW' || intent === 'MENU' || intent === 'GREETING') {
+            user.current_flow = 'MAIN_MENU';
+            await saveUser(user);
+            await sendMainMenu(senderId, user, senderName, user.current_flow === 'NEW');
             return;
         }
 
-
-        // --- 3. STATE MACHINE: Route message based on current user status ---
-        switch (user.status) {
+        // --- 2. MAIN MENU OPTIONS (Explicit Button Clicks) ---
+        if (intent === 'OPT_FIND_SERVICE' || intent === 'OPT_BUY_ITEM') {
+            const isService = (intent === 'OPT_FIND_SERVICE');
+            user.current_flow = isService ? 'service_request_category' : 'buyer_flow_category';
+            user.service_category = isService ? 'General Service Request' : 'General Item Request'; // Set temporary category
+            await saveUser(user);
             
-            case FLOW_STATES.NEW:
-            case FLOW_STATES.MAIN_MENU:
-                await handleNewOrMenuState(senderId, user, senderName, aiParsed);
-                break;
-                
-            case FLOW_STATES.AUTO_CONFIRM_REQUEST:
-                // Expected: CONFIRM_REQUEST or CORRECT_REQUEST (handled in universal break)
-                if (intent === 'CONFIRM_REQUEST') {
-                    const mockLocation = user.city_initial || 'Ibadan';
-                    const locationPrompt = await generateAIResponse(`Awesome! Just to make sure, is your current location still *${mockLocation}, ${user.state_initial} State*? Confirm below or type your new city/area.`, user.preferred_persona);
-                    
-                    const bodyText = `${locationPrompt}\n\n*Current Location:* ${mockLocation}, ${user.state_initial} State`;
-                    
-                    const locationPayload = getConfirmationButtons(bodyText, "CONFIRM_LOCATION", "CORRECT_LOCATION", `Confirming your location.`, user.preferred_persona);
-                    user.status = FLOW_STATES.AWAIT_LOCATION_CONFIRM;
-                    await saveUser(user);
-                    
-                    await sendWhatsAppMessage(senderId, locationPayload);
-                    
-                } else {
-                    await handleDefaultOrUnknown(senderId, user);
-                }
-                break;
-                
-            case FLOW_STATES.AWAIT_LOCATION_CONFIRM:
-                await handleAwaitingLocation(senderId, user, aiParsed, incomingText);
-                break;
-                
-            case FLOW_STATES.REQUEST_MATCHING:
-                // User should not be here, re-send the carousel
-                await sendMatchCarouselList(user, senderId);
-                break;
-                
-            case FLOW_STATES.AWAIT_MATCH_SELECTION:
-                // Expected: SELECT_ (list reply)
-                if (intent.startsWith('SELECT_')) {
-                    const selectionId = intent.replace('SELECT_', '');
-                    const matches = JSON.parse(user.match_data || '[]');
-                    const selectedMatch = matches.find(m => m.mock_id === selectionId);
-        
-                    if (selectedMatch) {
-                        user.selected_match = selectedMatch;
-                        const reqType = user.current_flow === 'service_request' ? 'Helpa' : 'Seller';
-                        
-                        const detailMessage = `*Selected ${reqType}:* ${selectedMatch.name} (${selectedMatch.title})\n` +
-                                              `*Quality:* ${selectedMatch.quality}\n` +
-                                              `*Price:* ${selectedMatch.price}\n\n` +
-                                              `Ready to book this ${reqType} and pay through secure escrow?`;
-        
-                        const finalConfirmPayload = getConfirmationButtons(detailMessage, "CONFIRM_BOOKING_FINAL", "MENU", `Final check before payment.`, user.preferred_persona);
-                        
-                        user.status = FLOW_STATES.AWAIT_FINAL_CONFIRM;
-                        await saveUser(user);
-                        await sendWhatsAppMessage(senderId, finalConfirmPayload);
-                        return;
-                    }
-                }
-                await handleDefaultOrUnknown(senderId, user);
-                break;
-                
-            case FLOW_STATES.AWAIT_FINAL_CONFIRM:
-                // Expected: CONFIRM_BOOKING_FINAL
-                if (intent === 'CONFIRM_BOOKING_FINAL') {
-                    console.log(`[Transaction] Signaling Provider/Seller: ${user.selected_match.name}`);
-                    user.status = FLOW_STATES.PAYMENT_PENDING; 
-                    user.user_id = `TXN-${Date.now()}`;
-                    await saveUser(user);
-                    
-                    await sendPaymentLink(user, senderId);
-                    
-                } else {
-                    await handleDefaultOrUnknown(senderId, user);
-                }
-                break;
-
-            // Default handles PAYMENT_PENDING and any other unexpected state
-            default: 
-                await handleDefaultOrUnknown(senderId, user);
-                break;
+            const prompt = `Great choice! What specific ${isService ? 'service' : 'item'} are you looking for? e.g., 'Plumber' or 'Used iPhone 12'.`;
+            await sendTextMessage(senderId, await generateAIResponse(prompt, user.preferred_persona));
+            return;
         }
 
+        // --- 3. PROACTIVE REQUEST (AI-Parsed text input) ---
+        if (intent === 'SERVICE_REQUEST' || intent === 'PRODUCT_REQUEST') {
+            const isService = (intent === 'SERVICE_REQUEST');
+            user.current_flow = isService ? 'service_request_location' : 'buyer_flow_location';
+            user.service_category = aiParsed.category || (isService ? 'General Service' : 'General Item');
+            user.description_summary = aiParsed.description_summary;
+            await saveUser(user);
+
+            const categoryToConfirm = (user.service_category.includes('General') && user.description_summary) 
+                ? user.description_summary : user.service_category;
+            
+            const locationPrompt = await generateAIResponse(`Got it! We're looking for *${categoryToConfirm}*. Please confirm your city/area, or type a new one (e.g., 'Ikeja' or 'Saki'). Currently set to *${user.city_initial}*.`, user.preferred_persona);
+            
+            await sendWhatsAppMessage(senderId, getConfirmationButtons(
+                locationPrompt, 
+                "CONFIRM_LOCATION", 
+                "CORRECT_LOCATION", 
+                `Current location: ${user.city_initial}, ${user.state_initial}`,
+                user.preferred_persona
+            ));
+            return;
+        }
+
+        // --- 4. FLOW-SPECIFIC HANDLERS ---
+        
+        // A. Waiting for category input (after clicking OPT_FIND_SERVICE/OPT_BUY_ITEM)
+        if (user.current_flow.includes('_category') && incomingText) {
+            user.service_category = incomingText.trim();
+            user.current_flow = user.current_flow.replace('_category', '_location');
+            await saveUser(user);
+            
+            const locationPrompt = await generateAIResponse(`Thanks! Now, where exactly do you need the ${user.service_category} done? Confirm your city/area, or type a new one. Currently set to *${user.city_initial}*.`, user.preferred_persona);
+            
+            await sendWhatsAppMessage(senderId, getConfirmationButtons(
+                locationPrompt, 
+                "CONFIRM_LOCATION", 
+                "CORRECT_LOCATION", 
+                `Current location: ${user.city_initial}, ${user.state_initial}`,
+                user.preferred_persona
+            ));
+            return;
+        }
+        
+        // B. Location Confirmation/Correction
+        if (user.current_flow.includes('_location')) {
+            if (intent === 'CONFIRM_LOCATION' || incomingText) {
+                
+                if (incomingText) {
+                    user.city_initial = incomingText.trim().split(',')[0];
+                }
+                
+                await sendTextMessage(senderId, await generateAIResponse(`Location confirmed in *${user.city_initial}*! Searching for the best matches for ${user.service_category} now.`, user.preferred_persona));
+                
+                // Proceed to matching
+                user.current_flow = user.current_flow.replace('_location', '_matching');
+                await saveUser(user);
+                await sendMatchList(user, senderId);
+
+            } else if (intent === 'CORRECT_LOCATION') {
+                 await sendTextMessage(senderId, await generateAIResponse("No worries, please type your correct city and area now (e.g., 'Ikeja' or 'Saki').", user.preferred_persona)); 
+            } else {
+                await sendTextMessage(senderId, await generateAIResponse("I need you to confirm your location or type in a new one to continue.", user.preferred_persona)); 
+            }
+            return;
+        }
+        
+        // C. Match Selection (List Reply)
+        if (user.current_flow.includes('_matching') && intent.startsWith('SELECT_')) {
+            const selectionId = intent.replace('SELECT_', '');
+            
+            // NOTE: In this simplified flow, we don't store the full match data, just the ID.
+            const reqType = user.current_flow.includes('service') ? 'Helpa' : 'Seller';
+            
+            // Simulating final confirmation
+            const finalPrompt = await generateAIResponse(`Great choice! You selected *${selectionId}*. Ready to finalize the booking and move to secure escrow payment?`, user.preferred_persona);
+            
+            user.current_flow = 'await_payment';
+            await saveUser(user);
+
+            await sendWhatsAppMessage(senderId, getConfirmationButtons(
+                finalPrompt, 
+                "CONFIRM_PAYMENT", 
+                "MENU", 
+                `Final confirmation for ${reqType}.`,
+                user.preferred_persona
+            ));
+            return;
+        }
+        
+        // D. Final Payment Confirmation
+        if (user.current_flow === 'await_payment' && intent === 'CONFIRM_PAYMENT') {
+            const mockMonnifyLink = `https://pay.monnify.com/escrow/payment/${senderId.substring(4)}`;
+            user.current_flow = 'transaction_complete'; 
+            await saveUser(user);
+
+            const paymentPrompt = await generateAIResponse(`Excellent! I've notified the provider/seller. Please use the *Monnify Escrow* link below to pay. Your money is held safely until you confirm the job/item is delivered!`, user.preferred_persona);
+    
+            const finalMessage = `${paymentPrompt}\n\n*Secure Payment Link (Escrow):*\n${mockMonnifyLink}\n\n*Transaction ID:* TXN-${Date.now()}\n\nType MENU when payment is complete to see your active job.`;
+
+            await sendTextMessage(senderId, finalMessage);
+            return;
+        }
+
+        // --- 5. FALLBACK / UNKNOWN INTENT ---
+        const fallbackPrompt = await generateAIResponse("Sorry, I didn't quite get that. Try typing MENU to see my main options again.", user.preferred_persona);
+        await sendTextMessage(senderId, fallbackPrompt);
+
+
     } catch (error) {
-        console.error("❌ Critical error in handleMessageFlow (FATAL):", error.message);
+        console.error("❌ Critical error in handleMessageFlow:", error.message);
         // Attempt to reset to main menu on critical error
         let user = await getUserState(senderId);
         await sendTextMessage(senderId, "Uh oh, something went wrong on my side! Resetting the conversation. Type MENU to start again.");
-        user.status = FLOW_STATES.MAIN_MENU;
+        user.current_flow = 'MAIN_MENU';
         await saveUser(user);
     }
 }
@@ -823,5 +650,5 @@ app.post('/webhook', (req, res) => {
 // --- START SERVER ---
 app.listen(PORT, () => {
     console.log(`\nYourHelpa Server is listening on port ${PORT}`);
-    console.log("✅ Chatbot logic is now running in an intelligent State Machine configuration.");
+    console.log("✅ Chatbot logic is now running in a simple, linear configuration.");
 });
