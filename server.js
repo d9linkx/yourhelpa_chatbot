@@ -363,20 +363,20 @@ function getConfirmationButtons(bodyText, yesId, noId, footerText, userPersona =
 
 /**
  * Sends the Main Menu.
- * * FIX: This function is modified to only send *one* interactive message.
- * The introductory text is integrated into the interactive body.
+ * @param {string} senderId The WhatsApp ID of the recipient.
+ * @param {object} user The user state object.
+ * @param {string} senderName The user's name.
+ * @param {boolean} isFirstTime If this is the absolute first message sent to the user.
  */
-async function sendMainMenu(senderId, user, senderName) {
+async function sendMainMenu(senderId, user, senderName, isFirstTime = false) {
     const persona = PERSONAS[user.preferred_persona.toUpperCase()] || PERSONAS.BUKKY; // Updated default persona
     
-    // Check if the user is in a NEW state (first time hitting main menu after greeting)
     let bodyText;
-    if (user.status === FLOW_STATES.NEW) {
-        // If coming from NEW, the AI greeting was just sent (Message 1). 
-        // We now only need the action-oriented prompt to use the menu.
-        bodyText = `Welcome back, *${senderName}*! We are here to connect you with the best services and items in Nigeria. What can I help you find today? Please choose an option from the menu below.`;
+    if (isFirstTime) {
+        // --- Custom Welcome for the first-ever interaction ---
+        bodyText = `Hello there, *${senderName}*! I'm ${persona.name}, your AI helper for buying, selling, and hiring services right here in Lagos and Oyo State. What can I help you find today? Please choose an option from the menu below.`;
     } else {
-        // Standard menu return
+        // --- Standard message for returning to the menu ---
         bodyText = `Welcome back, *${senderName}*! I'm ready for your next request. Please choose from the options below.`;
     }
 
@@ -405,10 +405,6 @@ async function sendMainMenu(senderId, user, senderName) {
         ]
     }];
     
-    // *******************************************************************
-    // FIX APPLIED HERE: Combining the text message into the List Body.
-    // The previous sendTextMessage(senderId, welcomeText + ...) is REMOVED.
-    // *******************************************************************
     const menuPayload = {
         type: "interactive",
         interactive: {
@@ -572,6 +568,10 @@ async function handleMessageFlow(senderId, senderName, message) {
         
         // --- 2. UNIVERSAL MENU/BACK/RESET ---
         if (intent.startsWith('MENU') || intent.startsWith('OPT_') || intent === 'CORRECT_REQUEST') {
+            
+            // Flag to determine if this is a first-time greeting transition
+            const isFirstTimeUser = user.status === FLOW_STATES.NEW;
+            
             // Only reset status to MAIN_MENU if we are not handling a special flow option
             if (!['OPT_REGISTER_ME', 'OPT_MY_ACTIVE', 'OPT_SUPPORT', 'OPT_CHANGE_PERSONA'].includes(intent)) {
                 user.status = FLOW_STATES.MAIN_MENU; 
@@ -583,22 +583,23 @@ async function handleMessageFlow(senderId, senderName, message) {
             if (intent === 'OPT_REGISTER_ME' || intent === 'OPT_MY_ACTIVE' || intent === 'OPT_SUPPORT' || intent === 'OPT_CHANGE_PERSONA') {
                  // Send a temporary message indicating these options are TBD, then show menu
                  await sendTextMessage(senderId, await generateAIResponse(`That feature is coming soon! Let's focus on connecting you with a service or item for now. Type MENU to see the options again.`, user.preferred_persona));
-                 await sendMainMenu(senderId, user, senderName);
+                 // Use 'false' as this is a return from a TBD message, not the initial greeting
+                 await sendMainMenu(senderId, user, senderName, false); 
                  return;
             }
 
             // General MENU command:
-            await sendMainMenu(senderId, user, senderName);
+            await sendMainMenu(senderId, user, senderName, isFirstTimeUser);
             return;
         }
 
         // --- 3. GREETING/NEW USER HANDLER ---
         if (user.status === FLOW_STATES.NEW || intent === 'GREETING') {
             
-            // 3a. Generate ONE conversational greeting
-            // Enhanced prompt for smoother, less robotic language
-            const greetingText = await generateAIResponse(`The user sent a greeting (e.g., 'hi'). Respond courteously and warmly (using the ${persona.name} persona). Since this is the first interaction, ask them what they need help with today and mention the services you offer (Hiring professionals or Buying/Finding items). Be very conversational.`, user.preferred_persona);
-            await sendTextMessage(senderId, greetingText);
+            const isFirstTimeUser = user.status === FLOW_STATES.NEW;
+            
+            // --- CHANGE HERE: REMOVED THE AI-GENERATED TEXT GREETING ---
+            // The greeting is now integrated into the interactive menu (sendMainMenu)
             
             // 3b. Update status and save
             user.status = FLOW_STATES.MAIN_MENU; 
@@ -606,8 +607,8 @@ async function handleMessageFlow(senderId, senderName, message) {
             
             // 3c. If the user only sent a greeting, show the menu.
             if (!aiParsed.category && aiParsed.intent === 'GREETING') {
-                // Now, sendMainMenu is cleaner and only sends one message.
-                await sendMainMenu(senderId, user, senderName);
+                // Now, sendMainMenu is the first message (isFirstTimeUser is true)
+                await sendMainMenu(senderId, user, senderName, isFirstTimeUser);
                 return;
             }
             // If the user included a request (e.g., "Hi, cleaner"), execution will fall through to step 4 below.
