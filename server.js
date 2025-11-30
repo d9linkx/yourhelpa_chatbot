@@ -342,15 +342,16 @@ function getConfirmationButtons(bodyText, yesId, noId, footerText, userPersona =
 async function sendMainMenu(senderId, user, senderName, isFirstTime = false) {
     const persona = PERSONAS[user.preferred_persona.toUpperCase()] || PERSONAS.BUKKY; 
     
+    // Crucial fix: Only send the full welcome on the *very* first message.
     let bodyText = isFirstTime 
         ? `Hey *${senderName}*! I'm ${persona.name}, your plug for buying, selling, and hiring services in Lagos and Oyo State. What's the plan?`
         : `I'm ready when you are, *${senderName}*! What's next on the agenda?`;
 
     const listRows = [
-        { id: "OPT_FIND_SERVICE", title: "🛠️ Request a Service" }, // User's requested change
-        { id: "OPT_BUY_ITEM", title: "🛍️ Find an Item" }, // User's requested change
-        { id: "OPT_MY_ACTIVE", title: "💼 Ongoing Transactions" }, // User's requested change (Placeholder)
-        { id: "OPT_REPORT_ISSUE", title: "🚨 Report an Issue" }, // User's requested change (Placeholder)
+        { id: "OPT_FIND_SERVICE", title: "🛠️ Request a Service" }, 
+        { id: "OPT_BUY_ITEM", title: "🛍️ Find an Item" }, 
+        { id: "OPT_MY_ACTIVE", title: "💼 Ongoing Transactions" }, 
+        { id: "OPT_REPORT_ISSUE", title: "🚨 Report an Issue" }, 
     ];
     
     // Add "Become a Provider" if role is unassigned
@@ -394,12 +395,15 @@ async function sendMainMenu(senderId, user, senderName, isFirstTime = false) {
 async function promptForLocation(senderId, user, isServiceFlow) {
     const serviceType = isServiceFlow ? 'service' : 'item';
     
+    // Use AI to generate a contextual, friendly prompt
+    const aiPromptText = `I see you wanna ${isServiceFlow ? 'hire a pro' : 'find an item'}! Just to make sure I search right, can you confirm the location you need the ${serviceType} in?`;
+
     const locationPrompt = await generateAIResponse(
-        `First, let's confirm the location where you need the ${serviceType}. Is *${user.city_initial}* correct, or should I search somewhere else?`, 
+        aiPromptText, 
         user.preferred_persona
     );
     
-    const currentFlow = isServiceFlow ? 'service_flow_location' : 'buyer_flow_location';
+    const currentFlow = isServiceFlow ? 'AWAIT_SERVICE_LOCATION_CONFIRM' : 'AWAIT_BUYER_LOCATION_CONFIRM';
     user.current_flow = currentFlow; // Set state to AWAIT_LOCATION_CONFIRM
     await saveUser(user);
     
@@ -432,8 +436,6 @@ async function handleMessageFlow(senderId, senderName, message) {
         
         console.log(`[Flow] Detected Intent: ${intent} | Current Flow: ${user.current_flow}`);
         
-        const isButtonOrCommand = interactiveId || intent === 'MENU' || intent === 'GREETING';
-
         // -----------------------------------------------------------
         // 1. NEW USER / GREETING / MENU COMMAND
         // -----------------------------------------------------------
@@ -452,18 +454,17 @@ async function handleMessageFlow(senderId, senderName, message) {
             const isService = (intent === 'OPT_FIND_SERVICE');
             
             if (isService || intent === 'OPT_BUY_ITEM') {
-                // Transition to location confirmation state
+                // *** FIX APPLIED HERE: Directly prompt for location without sending the menu again. ***
                 await promptForLocation(senderId, user, isService);
                 return;
             } 
             
             // Handle Placeholder Options
-            if (intent === 'OPT_MY_ACTIVE' || intent === 'OPT_REPORT_ISSUE' || intent === 'OPT_REGISTER_ME' || intent === 'OPT_SUPPORT') {
-                const featureName = (intent === 'OPT_MY_ACTIVE') ? 'Active Transactions' : (intent === 'OPT_REPORT_ISSUE' ? 'Issue Reporting' : (intent === 'OPT_REGISTER_ME' ? 'Provider Registration' : 'Support'));
-                
-                // Send placeholder text message (using AI response)
-                const placeholderText = await generateAIResponse(`That's a vital feature, but ${featureName} is still being perfected! I'll let you know when it's ready.`, user.preferred_persona);
-                await sendTextMessage(senderId, placeholderText);
+            if (intent === 'OPT_MY_ACTIVE' || intent === 'OPT_REPORT_ISSUE' || intent === 'OPT_REGISTER_ME' || intent === 'OPT_SUPPORT' || intent === 'OPT_CHANGE_PERSONA') {
+                // Generate a brief AI response acknowledging the action
+                const prompt = `You selected a non-flow option: ${intent.replace('OPT_', '')}. Acknowledge this selection and mention the feature is coming soon, or confirm the persona switch.`;
+                const responseText = await generateAIResponse(prompt, user.preferred_persona);
+                await sendTextMessage(senderId, responseText);
                 
                 // Keep the flow at MAIN_MENU and send the menu again
                 await sendMainMenu(senderId, user, senderName, false);
@@ -472,17 +473,18 @@ async function handleMessageFlow(senderId, senderName, message) {
         }
         
         // -----------------------------------------------------------
-        // 3. FALLBACK / UNKNOWN INPUT
+        // 3. FALLBACK / UNKNOWN INPUT (if not handled by other flow states later)
         // -----------------------------------------------------------
-        if (!isButtonOrCommand) {
-            // For now, any unknown input that isn't a button click should revert to the menu for clarity
-             const fallbackPrompt = await generateAIResponse("I'm not sure how to handle that right now. Let's stick to the options for a moment.", user.preferred_persona);
-            await sendTextMessage(senderId, fallbackPrompt);
-            
-            user.current_flow = 'MAIN_MENU';
-            await saveUser(user);
-            await sendMainMenu(senderId, user, senderName, false);
-            return;
+        if (user.current_flow === 'MAIN_MENU') {
+            const isButtonOrCommand = interactiveId || intent === 'MENU' || intent === 'GREETING';
+            if (!isButtonOrCommand) {
+                 const fallbackPrompt = await generateAIResponse("I'm not sure how to handle that right now. Let's stick to the options for a moment.", user.preferred_persona);
+                await sendTextMessage(senderId, fallbackPrompt);
+                
+                // Revert to main menu view
+                await sendMainMenu(senderId, user, senderName, false);
+                return;
+            }
         }
 
 
@@ -551,5 +553,5 @@ app.post('/webhook', (req, res) => {
 // --- START SERVER ---
 app.listen(PORT, () => {
     console.log(`\nYourHelpa Server is listening on port ${PORT}`);
-    console.log("✅ Initial chat flow (NEW -> MAIN_MENU -> Location Prompt) is fully functional.");
+    console.log("✅ Main flow fix implemented: Direct transition from menu selection to location prompt without repeating the welcome message.");
 });
