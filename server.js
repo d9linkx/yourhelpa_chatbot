@@ -65,6 +65,8 @@ function getSystemInstruction(personaName) {
         Your goal is to facilitate simple and safe transactions for both **Services (Hiring)** and **Items (Buying/Selling)**.
         You must be concise and action-oriented. All responses must be professional, warm, and use **clean, standard English**.
         
+        **CRITICAL AI FLOW RULE:** Maintain excellent conversational memory and flow. Do not repeat previous statements or use overly robotic language; act as a natural, helpful human assistant. Use context to make your responses seamless.
+
         **CRITICAL RULE (No Slang/Jargon):** Do not use any Nigerian Pidgin English, slang (e.g., 'biko', 'wahala', 'how far'), or overly dramatic language. Use clear, formal-but-friendly English.
         
         If a feature is unavailable, provide a friendly explanation and guide the user back to a clear action.
@@ -120,7 +122,9 @@ async function getUserState(phone) {
         }
 
     } catch (e) {
-        console.error("❌ APPS SCRIPT COMMUNICATION ERROR (GET_STATE):", e.response?.data || e.message);
+        // Log the specific error message from the Apps Script response if available
+        const errorMessage = e.response?.data?.error || e.response?.data || e.message;
+        console.error("❌ APPS SCRIPT COMMUNICATION ERROR (GET_STATE):", errorMessage);
         // Default user object for new/error state
         return { 
             phone: phone, 
@@ -171,7 +175,8 @@ async function saveUser(user) {
         }
         
     } catch (e) {
-        console.error("❌ APPS SCRIPT COMMUNICATION ERROR (SAVE_STATE):", e.response?.data || e.message);
+        const errorMessage = e.response?.data?.error || e.response?.data || e.message;
+        console.error("❌ APPS SCRIPT COMMUNICATION ERROR (SAVE_STATE):", errorMessage);
     }
 }
 
@@ -358,8 +363,17 @@ function getConfirmationButtons(bodyText, yesId, noId, footerText, userPersona =
  */
 async function sendMainMenu(senderId, user, senderName) {
     const persona = PERSONAS[user.preferred_persona.toUpperCase()] || PERSONAS.BUKKY; // Updated default persona
-    const welcomeText = `${persona.name} here! 👋 Welcome back, *${senderName}*. I'm here to connect you with the best services and items in Nigeria.`;
     
+    // Check if the user is in a NEW state (first time hitting main menu after greeting)
+    let welcomeText;
+    if (user.status === FLOW_STATES.NEW) {
+        // Use a generic welcome that the AI generates in handleMessageFlow
+        welcomeText = `${persona.name} here! 👋 Welcome, *${senderName}*. I'm here to connect you with the best services and items in Nigeria.`;
+    } else {
+        // Use a returning welcome
+        welcomeText = `${persona.name} here! 👋 Welcome back, *${senderName}*. I'm here to connect you with the best services and items in Nigeria.`;
+    }
+
     // Quick Replies for the Menu (used inside the List Message)
     const listRows = [
         { id: "OPT_FIND_SERVICE", title: "🛠️ Hire Professional" }, 
@@ -480,7 +494,7 @@ async function sendMatchCarouselList(user, senderId) {
         }))
     }];
 
-    const replyText = await generateAIResponse(`The user is waiting for the matching result. Respond excitedly (using the ${persona.name} persona) that you have found the top 5 verified ${providerRole}s nearest to them and they should choose one from the list below. Keep it max 2 sentences.`, user.preferred_persona);
+    const replyText = await generateAIResponse(`The user is waiting for the matching result for ${category} in ${user.city_initial}. Respond excitedly (using the ${persona.name} persona) that you have found the top 5 verified ${providerRole}s nearest to them and they should choose one from the list below. Keep it max 2 sentences.`, user.preferred_persona);
     
     // SAVE STATE: Store matches and update status
     user.match_data = JSON.stringify(matches);
@@ -512,7 +526,7 @@ async function sendPaymentLink(user, senderId) {
     // Mock Monnify Payment Link
     const mockMonnifyLink = `https://pay.monnify.com/escrow/payment/${user.user_id}`;
     
-    const paymentPrompt = await generateAIResponse(`The user has confirmed the final booking. As ${persona.name}, confirm that you have immediately notified the ${user.current_flow === 'service_request' ? 'Helpa' : 'Seller'} and that the user must now make the payment using the *Monnify Escrow* link below. Explain briefly (max 3 sentences) that the money is held safely until the service/item is delivered and approved by them.`, user.preferred_persona);
+    const paymentPrompt = await generateAIResponse(`The user has confirmed the final booking for the selected match. As ${persona.name}, confirm that you have immediately notified the ${user.current_flow === 'service_request' ? 'Helpa' : 'Seller'} and that the user must now make the payment using the *Monnify Escrow* link below. Explain briefly (max 3 sentences) that the money is held safely until the service/item is delivered and approved by them.`, user.preferred_persona);
     
     // Updated to use clean English for explanation
     const finalMessage = `${paymentPrompt}\n\n*Secure Payment Link (Escrow):*\n${mockMonnifyLink}\n\n*Transaction ID:* ${user.user_id}\n\nType MENU when payment is complete to see next steps.`;
@@ -550,8 +564,12 @@ async function handleMessageFlow(senderId, senderName, message) {
         
         // --- 2. UNIVERSAL MENU/BACK/RESET ---
         if (intent.startsWith('MENU') || intent.startsWith('OPT_') || intent === 'CORRECT_REQUEST') {
-            user.status = FLOW_STATES.MAIN_MENU; 
-            await saveUser(user);
+            // Only reset status to MAIN_MENU if we are not handling a special flow option
+            if (!['OPT_REGISTER_ME', 'OPT_MY_ACTIVE', 'OPT_SUPPORT', 'OPT_CHANGE_PERSONA'].includes(intent)) {
+                user.status = FLOW_STATES.MAIN_MENU; 
+                user.current_flow = ''; // Reset flow type
+                await saveUser(user);
+            }
             
             // Handle specific menu clicks that do not reset the flow entirely
             if (intent === 'OPT_REGISTER_ME' || intent === 'OPT_MY_ACTIVE' || intent === 'OPT_SUPPORT' || intent === 'OPT_CHANGE_PERSONA') {
@@ -566,25 +584,23 @@ async function handleMessageFlow(senderId, senderName, message) {
             return;
         }
 
-        // --- 3. GREETING/NEW USER HANDLER (CRITICAL FIX: Consolidate responses) ---
+        // --- 3. GREETING/NEW USER HANDLER ---
         if (user.status === FLOW_STATES.NEW || intent === 'GREETING') {
-            user.status = FLOW_STATES.MAIN_MENU; 
             
-            // Generate ONE greeting message only, then transition to flow logic or menu
-            const greetingText = await generateAIResponse(`The user sent a greeting (e.g., 'hi'). Respond courteously, respectfully, and informally (using the ${persona.name} persona with clean, standard English), then ask them what they need help with today.`, user.preferred_persona);
+            // 3a. Generate ONE conversational greeting
+            const greetingText = await generateAIResponse(`The user sent a greeting (e.g., 'hi'). Respond courteously, respectfully, and informally (using the ${persona.name} persona with clean, standard English), and ask them what they need help with today.`, user.preferred_persona);
             await sendTextMessage(senderId, greetingText);
             
+            // 3b. Update status and save
+            user.status = FLOW_STATES.MAIN_MENU; 
             await saveUser(user);
             
-            // If the user said "Hi, I need a plumber" (aiParsed has content), fall through to next step.
-            if (aiParsed.category || aiParsed.intent === 'SERVICE_REQUEST' || aiParsed.intent === 'PRODUCT_REQUEST') {
-                 // If the user sends a greeting AND a request (e.g., "Hi, cleaner"), fall through to next step.
-                 // We rely on the implicit action of the flow to take over now.
-            } else {
-                // If the user only sent a greeting, show the menu.
+            // 3c. If the user only sent a greeting, show the menu.
+            if (!aiParsed.category && aiParsed.intent === 'GREETING') {
                 await sendMainMenu(senderId, user, senderName);
                 return;
             }
+            // If the user included a request (e.g., "Hi, cleaner"), execution will fall through to step 4 below.
         }
         
         // --- 4. ADVANCED REQUEST DETECTION (Start of proactive flow) ---
@@ -599,16 +615,16 @@ async function handleMessageFlow(senderId, senderName, message) {
                 user.service_category = aiParsed.category || 'General Item Request'; 
             }
             
-            user.description_summary = aiParsed.description_summary || user.description_summary;
-            user.city_initial = aiParsed.location_city || user.city_initial;
-            
+            // Capture any initial description/location from the same message
+            if (aiParsed.description_summary) user.description_summary = aiParsed.description_summary;
+            if (aiParsed.location_city) user.city_initial = aiParsed.location_city;
+
             const reqType = user.current_flow === 'service_request' ? 'service' : 'item';
             
             // Build the confirmation message
-            // FIX: If category is generic, use the description summary for confirmation
             const categoryToConfirm = (user.service_category.includes('General') && user.description_summary) ? user.description_summary : user.service_category;
             
-            let confirmationBody = `Thank you! You are looking for a *${categoryToConfirm}* ${reqType}. Is this correct?`;
+            let confirmationBody = `Got it! You are looking for a *${categoryToConfirm}* ${reqType}. Is this correct?`;
             
             user.status = FLOW_STATES.AUTO_CONFIRM_REQUEST;
             await saveUser(user);
