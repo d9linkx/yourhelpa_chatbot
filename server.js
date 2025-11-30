@@ -437,7 +437,7 @@ async function promptForLocation(senderId, user, isServiceFlow, contextualPrompt
 // =========================================================================
 
 /**
- * Main function to handle the user's message and determine the next step.
+ * Main function 2 handle the user's message and determine the next step.
  */
 async function handleMessageFlow(senderId, senderName, message) {
     try {
