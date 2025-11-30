@@ -14,7 +14,7 @@ const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const ACCESS_TOKEN = process.env.ACCESS_TOKEN; 
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID; 
 
-// Gemini API Configuration
+// Gemini API Configuration (Reverting from OpenAI)
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || ""; 
 const GEMINI_MODEL = 'gemini-2.5-flash-preview-09-2025';
 
@@ -29,6 +29,7 @@ if (!VERIFY_TOKEN || !ACCESS_TOKEN || !PHONE_NUMBER_ID) {
 if (!APPS_SCRIPT_URL) {
     console.error("❌ CRITICAL ERROR: APPS_SCRIPT_URL environment variable is missing. State management will fail.");
     console.error("INSTRUCTION: Set APPS_SCRIPT_URL to your deployed Google Apps Script Web App URL.");
+    process.error("Exiting due to missing critical environment variable.");
     process.exit(1);
 }
 
@@ -38,17 +39,17 @@ if (!APPS_SCRIPT_URL) {
 // =========================================================================
 
 const PERSONAS = {
-    BUKKY: { // Renamed from LILY
-        name: "Bukky", // Renamed from Lily
-        tone: "friendly, enthusiastic, highly empathetic, and uses clear, standard English expressions. Avoids jargon and slang.", 
+    BUKKY: { 
+        name: "Bukky", 
+        tone: "super friendly, enthusiastic, and uses clear, informal language. She's your helpful marketplace buddy.", 
         avatar_url: "https://placehold.co/600x400/ff69b4/ffffff?text=Bukky+-+Helpa",
-        role_description: "Female AI Helper",
+        role_description: "Informal AI Helper",
     },
     KORE: {
         name: "Kore",
-        tone: "calm, assertive, concise, highly professional, and provides direct action-oriented guidance.",
+        tone: "calm, cool, and provides concise, easy-to-understand guidance with an informal vibe. He's efficient but casual.",
         avatar_url: "https://placehold.co/600x400/007bff/ffffff?text=Kore+-+Helpa",
-        role_description: "Masculine AI Helper",
+        role_description: "Informal AI Helper",
     }
 };
 
@@ -60,20 +61,19 @@ function getSystemInstruction(personaName) {
     const persona = PERSONAS[personaName.toUpperCase()] || PERSONAS.BUKKY; 
     
     return `
-        You are ${persona.name}, a WhatsApp-based conversational marketplace operating exclusively in **Nigeria**, currently serving users in **Lagos State** and **Oyo State**.
+        You are ${persona.name}, a super cool and friendly WhatsApp-based AI helping folks buy, sell, and hire services.
+        You only operate in **Nigeria**, specifically **Lagos State** and **Oyo State** for now.
         Your persona is: **${persona.tone}**.
-        Your goal is to facilitate simple and safe transactions for both **Services (Hiring)** and **Items (Buying/Selling)**.
-
-        **CRITICAL AI FLOW RULES (CONVERSATION STYLE):**
-        1. **Conversational Memory:** You MUST remember the immediate context of the conversation and the user's last action.
-        2. **Avoid Repetition:** DO NOT repeat phrases, introductions, or standard greetings (like "Got it!" or "Thank you for the information") in a robotic way. Integrate acknowledgement subtly.
-        3. **Conciseness:** Be extremely brief. Aim for 1-3 highly informative sentences unless a detailed explanation is specifically requested (e.g., for payment).
-        4. **Action-Oriented:** Every response should clearly guide the user to the next logical step (e.g., "Now, what is the best location for the service?").
-
-        **CRITICAL RULE (No Slang/Jargon):** Do not use any Nigerian Pidgin English, slang (e.g., 'biko', 'wahala', 'how far'), or overly dramatic language. Use clear, formal-but-friendly English.
         
-        If a feature is unavailable, provide a friendly explanation and guide the user back to a clear action.
-        All location references must prioritize Lagos or Oyo State.
+        **CRITICAL AI FLOW RULES (CONVERSATION STYLE):**
+        1. **Informal & Conversational:** Talk like a friend helping out. Use contractions and keep the tone light.
+        2. **Super Brief:** Keep your responses to *1-3 short sentences* max. Don't write paragraphs!
+        3. **Action-Oriented:** Always guide the user to the next simple step (e.g., "Gimme your location," or "Which match looks best?").
+        4. **Nigerian Context:** You understand the local marketplace. Mention local states/cities naturally.
+
+        **CRITICAL RULE (Style):** Use informal, friendly English with contractions (e.g., "I'm," "you'll"). AVOID Nigerian Pidgin English, aggressive slang, or complex technical jargon.
+        
+        If a feature is unavailable, just say it's "coming soon" in a friendly way, and quickly get them back to the main goal.
     `;
 }
 
@@ -112,7 +112,7 @@ async function getUserState(phone) {
         // CHECK 2: Validate the JSON response structure
         if (response.data.success && response.data.user) {
             // Initialize defaults if missing
-            // CHANGED: Default persona is now 'bukky'
+            // Default persona is 'bukky'
             if (!response.data.user.preferred_persona) response.data.user.preferred_persona = 'bukky'; 
             if (!response.data.user.city_initial) {
                 response.data.user.city_initial = 'Ibadan';
@@ -138,7 +138,7 @@ async function getUserState(phone) {
             state_initial: 'Oyo',
             current_flow: '',
             status: FLOW_STATES.NEW, 
-            preferred_persona: 'bukky', // CHANGED: Default is now 'bukky'
+            preferred_persona: 'bukky', // Default is now 'bukky'
             row_index: 0,
             service_category: '', 
             description_summary: '', 
@@ -185,7 +185,7 @@ async function saveUser(user) {
 
 
 // =========================================================================
-// ADVANCED AI INTENT & PARSING 
+// GEMINI ADVANCED AI INTENT & PARSING 
 // =========================================================================
 
 const ADVANCED_INTENT_SCHEMA = {
@@ -222,9 +222,10 @@ const ADVANCED_INTENT_SCHEMA = {
 
 
 /**
- * Uses Gemini to detect intent and parse request details in one go.
+ * Uses Gemini to detect intent and parse request details in one go (JSON Mode).
  */
-async function getAdvancedIntentAndParse(input, userPersona = 'bukky') { // Updated default persona
+async function getAdvancedIntentAndParse(input, userPersona = 'bukky') { 
+    
     if (!GEMINI_API_KEY) return { intent: 'UNKNOWN', category: '', description_summary: '', location_city: '' };
     
     // Prioritize explicit button clicks/keywords
@@ -235,18 +236,22 @@ async function getAdvancedIntentAndParse(input, userPersona = 'bukky') { // Upda
         return { intent: 'MENU', category: '', description_summary: '', location_city: '' };
     }
 
+    // --- Using Gemini API for structured JSON output ---
     const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
     const persona = PERSONAS[userPersona.toUpperCase()];
     
     const parsingInstruction = `
         You are ${persona.name}. The user has sent the message: "${input}".
         
-        Task: Determine the user's intent and extract any potential service/product request details, location mentioned, and a summary.
-        1. If the message is just a greeting (e.g., 'hi', 'hello', 'good morning'), set intent to GREETING.
-        2. If the message clearly asks for a service (e.g., 'I need a carpenter'), set intent to SERVICE_REQUEST.
-        3. If the message clearly asks for a product (e.g., 'Where can I buy a cheap mattress'), set intent to PRODUCT_REQUEST.
-        4. Extract the 'category', 'description_summary', and 'location_city' if found. Use empty string "" if not found.
+        Task: Determine the user's intent and extract details.
+        1. GREETING: 'hi', 'hello', etc.
+        2. SERVICE_REQUEST: 'I need a plumber', 'carpenter needed'.
+        3. PRODUCT_REQUEST: 'I want a phone', 'sell me a mattress'.
+        4. MENU: User asked for MENU or BACK.
+        5. CONFIRM_REQUEST, CORRECT_REQUEST, SELECT_*: These are IDs from buttons, treat them as direct intents.
+        6. UNKNOWN: Anything else.
         
+        Extract the 'category' (e.g., 'Plumber'), a 'description_summary' (brief context/details), and 'location_city' (a Nigerian city like 'Ikeja'). Use empty string "" if not found.
         Your entire output MUST be a JSON object adhering to the provided schema.
     `;
 
@@ -274,9 +279,13 @@ async function getAdvancedIntentAndParse(input, userPersona = 'bukky') { // Upda
 }
 
 
-async function generateAIResponse(text, userPersona = 'bukky') { // Updated default persona
+/**
+ * Uses Gemini to generate conversational, informal responses.
+ */
+async function generateAIResponse(text, userPersona = 'bukky') { 
     if (!GEMINI_API_KEY) return "⚠️ AI Service Error: GEMINI_API_KEY is not configured.";
     
+    // --- Using Gemini API for conversational text generation ---
     const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
     const systemPrompt = getSystemInstruction(userPersona);
     
@@ -344,7 +353,7 @@ async function sendTextMessage(to, text) {
 /**
  * Generates a WhatsApp Interactive Button Message for YES/NO confirmation.
  */
-function getConfirmationButtons(bodyText, yesId, noId, footerText, userPersona = 'bukky') { // Updated default persona
+function getConfirmationButtons(bodyText, yesId, noId, footerText, userPersona = 'bukky') { 
     return {
         type: "interactive",
         interactive: {
@@ -369,15 +378,15 @@ function getConfirmationButtons(bodyText, yesId, noId, footerText, userPersona =
  * @param {boolean} isFirstTime If this is the absolute first message sent to the user.
  */
 async function sendMainMenu(senderId, user, senderName, isFirstTime = false) {
-    const persona = PERSONAS[user.preferred_persona.toUpperCase()] || PERSONAS.BUKKY; // Updated default persona
+    const persona = PERSONAS[user.preferred_persona.toUpperCase()] || PERSONAS.BUKKY; 
     
     let bodyText;
     if (isFirstTime) {
         // --- Custom Welcome for the first-ever interaction ---
-        bodyText = `Hello there, *${senderName}*! I'm ${persona.name}, your AI helper for buying, selling, and hiring services right here in Lagos and Oyo State. What can I help you find today? Please choose an option from the menu below.`;
+        bodyText = `Hey *${senderName}*! I'm ${persona.name}, your marketplace plug for buying, selling, and hiring services here in Lagos and Oyo State. What's the plan? Choose an option below!`;
     } else {
         // --- Standard message for returning to the menu ---
-        bodyText = `Welcome back, *${senderName}*! I'm ready for your next request. Please choose from the options below.`;
+        bodyText = `I'm ready when you are, *${senderName}*! What's next on the agenda?`;
     }
 
     // Quick Replies for the Menu (used inside the List Message)
@@ -553,13 +562,14 @@ async function handleMessageFlow(senderId, senderName, message) {
         let interactiveId = message.interactive?.button_reply?.id || message.interactive?.list_reply?.id || '';
         
         let flowInput = interactiveId || incomingText.trim();
-        const persona = PERSONAS[user.preferred_persona.toUpperCase()] || PERSONAS.BUKKY; // Updated default persona
+        const persona = PERSONAS[user.preferred_persona.toUpperCase()] || PERSONAS.BUKKY; 
 
         // --- 1. AI INTENT & PARSING ---
         let aiParsed;
         if (interactiveId) {
              aiParsed = { intent: interactiveId, category: '', description_summary: '', location_city: '' };
         } else {
+             // Use Gemini for intent parsing
              aiParsed = await getAdvancedIntentAndParse(flowInput, user.preferred_persona);
         }
 
@@ -572,23 +582,23 @@ async function handleMessageFlow(senderId, senderName, message) {
             // Flag to determine if this is a first-time greeting transition
             const isFirstTimeUser = user.status === FLOW_STATES.NEW;
             
-            // Only reset status to MAIN_MENU if we are not handling a special flow option
-            if (!['OPT_REGISTER_ME', 'OPT_MY_ACTIVE', 'OPT_SUPPORT', 'OPT_CHANGE_PERSONA'].includes(intent)) {
-                user.status = FLOW_STATES.MAIN_MENU; 
-                user.current_flow = ''; // Reset flow type
-                await saveUser(user);
-            }
-            
-            // Handle specific menu clicks that do not reset the flow entirely
-            if (intent === 'OPT_REGISTER_ME' || intent === 'OPT_MY_ACTIVE' || intent === 'OPT_SUPPORT' || intent === 'OPT_CHANGE_PERSONA') {
-                 // Send a temporary message indicating these options are TBD, then show menu
-                 await sendTextMessage(senderId, await generateAIResponse(`That feature is coming soon! Let's focus on connecting you with a service or item for now. Type MENU to see the options again.`, user.preferred_persona));
-                 // Use 'false' as this is a return from a TBD message, not the initial greeting
+            // Handle specific menu clicks that DO NOT reset the state
+            if (['OPT_REGISTER_ME', 'OPT_MY_ACTIVE', 'OPT_SUPPORT', 'OPT_CHANGE_PERSONA'].includes(intent)) {
+                 // Send a temporary message indicating these options are TBD
+                 const tempMessage = await generateAIResponse(`That feature is coming soon! Don't worry, we're working on it. Let's focus on connecting you with a service or item for now. Type MENU to see the options again.`, user.preferred_persona);
+                 await sendTextMessage(senderId, tempMessage);
+                 // Send menu immediately after the TBD message (isFirstTimeUser must be false here)
                  await sendMainMenu(senderId, user, senderName, false); 
-                 return;
+                 return; // CRITICAL FIX: Ensure flow ends here after handling action
             }
 
             // General MENU command:
+            
+            // Only reset status to MAIN_MENU if we are not handling a special flow option
+            user.status = FLOW_STATES.MAIN_MENU; 
+            user.current_flow = ''; // Reset flow type
+            await saveUser(user);
+            
             await sendMainMenu(senderId, user, senderName, isFirstTimeUser);
             return;
         }
@@ -597,9 +607,6 @@ async function handleMessageFlow(senderId, senderName, message) {
         if (user.status === FLOW_STATES.NEW || intent === 'GREETING') {
             
             const isFirstTimeUser = user.status === FLOW_STATES.NEW;
-            
-            // --- CHANGE HERE: REMOVED THE AI-GENERATED TEXT GREETING ---
-            // The greeting is now integrated into the interactive menu (sendMainMenu)
             
             // 3b. Update status and save
             user.status = FLOW_STATES.MAIN_MENU; 
@@ -612,7 +619,6 @@ async function handleMessageFlow(senderId, senderName, message) {
                 return;
             }
             // If the user included a request (e.g., "Hi, cleaner"), execution will fall through to step 4 below.
-            // We should ensure we return here if we are not falling through to step 4, just to be safe.
             if (!aiParsed.category) {
                  return;
             }
@@ -678,7 +684,7 @@ async function handleMessageFlow(senderId, senderName, message) {
                 user.status = FLOW_STATES.REQUEST_MATCHING;
                 await saveUser(user);
                 
-                await sendTextMessage(senderId, await generateAIResponse(`Location confirmed in ${user.city_initial}. Searching the database now. Please wait while I find the best providers for you.`, user.preferred_persona)); 
+                await sendTextMessage(senderId, await generateAIResponse(`Location confirmed in ${user.city_initial}. Searching the database now. Hang tight while I find the best matches for you!`, user.preferred_persona)); 
                 await sendMatchCarouselList(user, senderId);
                 return;
 
@@ -706,7 +712,7 @@ async function handleMessageFlow(senderId, senderName, message) {
                 user.status = FLOW_STATES.REQUEST_MATCHING;
                 await saveUser(user);
                 
-                await sendTextMessage(senderId, await generateAIResponse(`Location successfully updated to *${user.city_initial}, ${user.state_initial} State*. Now searching the database for ${user.service_category}.`, user.preferred_persona)); 
+                await sendTextMessage(senderId, await generateAIResponse(`Location successfully updated to *${user.city_initial}, ${user.state_initial} State*. Now searching for the best deals on ${user.service_category}.`, user.preferred_persona)); 
                 await sendMatchCarouselList(user, senderId);
                 return;
             } else {
@@ -731,7 +737,7 @@ async function handleMessageFlow(senderId, senderName, message) {
                                       `*Quality:* ${selectedMatch.quality}\n` +
                                       `*Price:* ${selectedMatch.price}\n\n` +
                                       `*Description:* ${selectedMatch.description}\n\n` +
-                                      `Are you ready to proceed with booking this ${reqType} and making the escrow payment?`;
+                                      `Ready to book this ${reqType} and pay through escrow?`;
 
                 const finalConfirmPayload = getConfirmationButtons(detailMessage, "CONFIRM_BOOKING_FINAL", "MENU", `Final check before payment.`, user.preferred_persona);
                 
@@ -760,7 +766,7 @@ async function handleMessageFlow(senderId, senderName, message) {
         // --- 9. DEFAULT FALLBACK / UNKNOWN INPUT ---
         if (intent === 'UNKNOWN' || (user.status !== FLOW_STATES.MAIN_MENU && !interactiveId)) {
             // Enhanced prompt for smoother, less robotic language
-            const fallbackPrompt = await generateAIResponse(`The user sent: "${incomingText}". I didn't quite catch that. I am currently waiting for you to select an option from a button or list, or type a clear request or MENU. Please try again.`, user.preferred_persona);
+            const fallbackPrompt = await generateAIResponse(`I didn't quite catch that. I'm waiting for you to select an option from a button or list, or type a clear request or MENU. Let's try that again!`, user.preferred_persona);
             await sendTextMessage(senderId, fallbackPrompt); 
         }
 
@@ -771,7 +777,7 @@ async function handleMessageFlow(senderId, senderName, message) {
         let user = await getUserState(senderId);
         user.status = FLOW_STATES.MAIN_MENU;
         await saveUser(user);
-        await sendTextMessage(senderId, "A critical system error occurred. Please try again later. Type MENU to reset.");
+        await sendTextMessage(senderId, "Uh oh, something went wrong on my side! Type MENU to reset and let's try again.");
     }
 }
 
