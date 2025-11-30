@@ -15,7 +15,6 @@ const ACCESS_TOKEN = process.env.ACCESS_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID; 
 
 // Gemini API Configuration
-// NOTE: Use 'gemini-2.5-flash-preview-09-2025' for text generation
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || ""; 
 const GEMINI_MODEL = 'gemini-2.5-flash-preview-09-2025';
 
@@ -82,7 +81,7 @@ const BASIC_INTENT_SCHEMA = {
             type: "STRING",
             description: "The primary purpose of the user's message.",
             enum: [
-                "GREETING", // Covers 'hi', 'hello', 'hey'
+                "GREETING", 
                 "SERVICE_REQUEST", 
                 "PRODUCT_REQUEST", 
                 "MENU", 
@@ -108,15 +107,17 @@ const BASIC_INTENT_SCHEMA = {
 async function getBasicIntentAndParse(input) { 
     
     // Quick exit if AI key is missing or input is a known button ID
-    if (!GEMINI_API_KEY || input.startsWith('OPT_') || input.startsWith('CONFIRM_') || input.startsWith('CORRECT_') || input.startsWith('SELECT_')) {
-        // If it's an explicit button ID, use it as the intent directly
-        if (input.startsWith('OPT_') || input.startsWith('CONFIRM_') || input.startsWith('CORRECT_') || input.startsWith('SELECT_')) {
-             return { intent: input, category: '', description_summary: '' };
-        }
-        // If key is missing, treat as unknown unless it's a menu command
-        if (input.toUpperCase() === 'MENU' || input.toUpperCase() === 'BACK') {
-            return { intent: 'MENU', category: '', description_summary: '' };
-        }
+    const knownIntent = ['OPT_', 'CONFIRM_', 'CORRECT_', 'SELECT_'].find(prefix => input.startsWith(prefix));
+    
+    if (knownIntent) {
+        return { intent: input, category: '', description_summary: '' };
+    }
+    
+    if (input.toUpperCase() === 'MENU' || input.toUpperCase() === 'BACK') {
+        return { intent: 'MENU', category: '', description_summary: '' };
+    }
+
+    if (!GEMINI_API_KEY) {
         return { intent: 'UNKNOWN', category: '', description_summary: '' };
     }
     
@@ -161,6 +162,37 @@ async function getBasicIntentAndParse(input) {
 }
 
 
+/**
+ * Uses Gemini to generate conversational, informal responses.
+ */
+async function generateAIResponse(text, userPersona = 'bukky') { 
+    if (!GEMINI_API_KEY) return "⚠️ AI Service Error: GEMINI_API_KEY is not configured.";
+    
+    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+    const systemPrompt = getSystemInstruction(userPersona);
+    
+    const payload = {
+        contents: [{ parts: [{ text: text }] }],
+        systemInstruction: {
+            parts: [{ text: systemPrompt }]
+        },
+    };
+
+    try {
+        const response = await axios.post(apiUrl, payload, {
+            headers: { 'Content-Type': 'application/json' }
+        });
+        
+        const result = response.data;
+        return result.candidates?.[0]?.content?.parts?.[0]?.text || "A system error occurred. Please type MENU to start over.";
+
+    } catch (error) {
+        console.error("Gemini Conversational API Error:", error.response?.data || error.message);
+        return "I am currently experiencing some network issues. Please wait a moment and try sending your message again.";
+    }
+}
+
+
 // =========================================================================
 // GOOGLE APPS SCRIPT & USER STATE MANAGEMENT 
 // =========================================================================
@@ -185,7 +217,6 @@ async function getUserState(phone) {
             if (!user.preferred_persona) user.preferred_persona = 'bukky'; 
             if (!user.city_initial) user.city_initial = 'Ibadan';
             if (!user.state_initial) user.state_initial = 'Oyo';
-            // Crucial: current_flow is 'NEW' if it's the first time
             if (!user.current_flow) user.current_flow = 'NEW'; 
             
             return user;
@@ -248,7 +279,7 @@ async function saveUser(user) {
 
 
 // =========================================================================
-// WHATSAPP INTERACTIVE MESSAGING FUNCTIONS 
+// WHATSAPP INTERACTIVE MESSAGING & FLOW FUNCTIONS 
 // =========================================================================
 
 const META_API_URL = `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`;
@@ -283,6 +314,24 @@ async function sendTextMessage(to, text) {
     });
 }
 
+function getConfirmationButtons(bodyText, yesId, noId, footerText, userPersona = 'bukky') { 
+    return {
+        type: "interactive",
+        interactive: {
+            type: "button",
+            body: { text: bodyText },
+            action: {
+                buttons: [
+                    { type: "reply", reply: { id: yesId, title: "✅ YES, Confirm" } },
+                    { type: "reply", reply: { id: noId, title: `❌ NO, Start Over` } }
+                ]
+            },
+            footer: { text: footerText || `Chatting with ${userPersona}` }
+        }
+    };
+}
+
+
 /**
  * Sends the main interactive list menu to the user.
  * @param {string} senderId - WhatsApp ID of the user.
@@ -298,10 +347,13 @@ async function sendMainMenu(senderId, user, senderName, isFirstTime = false) {
         : `I'm ready when you are, *${senderName}*! What's next on the agenda?`;
 
     const listRows = [
-        { id: "OPT_FIND_SERVICE", title: "🛠️ Hire Professional" }, 
-        { id: "OPT_BUY_ITEM", title: "🛍️ Buy/Find Item" },         
+        { id: "OPT_FIND_SERVICE", title: "🛠️ Request a Service" }, // User's requested change
+        { id: "OPT_BUY_ITEM", title: "🛍️ Find an Item" }, // User's requested change
+        { id: "OPT_MY_ACTIVE", title: "💼 Ongoing Transactions" }, // User's requested change (Placeholder)
+        { id: "OPT_REPORT_ISSUE", title: "🚨 Report an Issue" }, // User's requested change (Placeholder)
     ];
     
+    // Add "Become a Provider" if role is unassigned
     if (user.role === 'unassigned') {
          listRows.push({ id: "OPT_REGISTER_ME", title: "🌟 Become a Provider" }); 
     }
@@ -312,10 +364,9 @@ async function sendMainMenu(senderId, user, senderName, isFirstTime = false) {
         title: "Quick Actions",
         rows: listRows.map(r => ({ id: r.id, title: r.title }))
     }, {
-        title: "Account & Settings",
+        title: "Settings",
         rows: [
-            { id: "OPT_MY_ACTIVE", title: "💼 Active Jobs/Listings" }, 
-            { id: "OPT_SUPPORT", title: "⚙️ Support/Settings" }, 
+            { id: "OPT_SUPPORT", title: "⚙️ Support/Help" }, 
             { id: "OPT_CHANGE_PERSONA", title: `🔄 Switch to ${otherPersonaName}` }
         ]
     }];
@@ -337,13 +388,37 @@ async function sendMainMenu(senderId, user, senderName, isFirstTime = false) {
     await sendWhatsAppMessage(senderId, menuPayload);
 }
 
+/**
+ * Prompts the user to confirm or correct their location.
+ */
+async function promptForLocation(senderId, user, isServiceFlow) {
+    const serviceType = isServiceFlow ? 'service' : 'item';
+    
+    const locationPrompt = await generateAIResponse(
+        `First, let's confirm the location where you need the ${serviceType}. Is *${user.city_initial}* correct, or should I search somewhere else?`, 
+        user.preferred_persona
+    );
+    
+    const currentFlow = isServiceFlow ? 'service_flow_location' : 'buyer_flow_location';
+    user.current_flow = currentFlow; // Set state to AWAIT_LOCATION_CONFIRM
+    await saveUser(user);
+    
+    await sendWhatsAppMessage(senderId, getConfirmationButtons(
+        locationPrompt, 
+        "CONFIRM_LOCATION", 
+        "CORRECT_LOCATION", 
+        `Current location: ${user.city_initial}, ${user.state_initial}`,
+        user.preferred_persona
+    ));
+}
+
+
 // =========================================================================
 // MAIN MESSAGE ROUTER 
 // =========================================================================
 
 /**
  * Main function to handle the user's message and determine the next step.
- * This function currently only handles the initial entry/greeting to the MAIN_MENU.
  */
 async function handleMessageFlow(senderId, senderName, message) {
     try {
@@ -356,24 +431,60 @@ async function handleMessageFlow(senderId, senderName, message) {
         const intent = aiParsed.intent;
         
         console.log(`[Flow] Detected Intent: ${intent} | Current Flow: ${user.current_flow}`);
+        
+        const isButtonOrCommand = interactiveId || intent === 'MENU' || intent === 'GREETING';
 
-        // --- 1. CORE MENU/GREETING/NEW USER HANDLING ---
-        if (user.current_flow === 'NEW' || intent === 'MENU' || intent === 'GREETING') {
+        // -----------------------------------------------------------
+        // 1. NEW USER / GREETING / MENU COMMAND
+        // -----------------------------------------------------------
+        if (user.current_flow === 'NEW' || intent === 'MENU' || (user.current_flow === 'MAIN_MENU' && intent === 'GREETING')) {
             const isFirstTime = user.current_flow === 'NEW';
-            user.current_flow = 'MAIN_MENU'; // Set the new state
+            user.current_flow = 'MAIN_MENU'; 
             await saveUser(user);
             await sendMainMenu(senderId, user, senderName, isFirstTime);
             return;
         }
 
-        // --- 2. FALLBACK (for anything other than NEW/GREETING/MENU) ---
-        // For now, any unknown input that isn't a greeting should revert to the menu.
-        user.current_flow = 'MAIN_MENU';
-        await saveUser(user);
+        // -----------------------------------------------------------
+        // 2. MAIN MENU OPTION SELECTION (from MAIN_MENU state)
+        // -----------------------------------------------------------
+        if (user.current_flow === 'MAIN_MENU' && intent.startsWith('OPT_')) {
+            const isService = (intent === 'OPT_FIND_SERVICE');
+            
+            if (isService || intent === 'OPT_BUY_ITEM') {
+                // Transition to location confirmation state
+                await promptForLocation(senderId, user, isService);
+                return;
+            } 
+            
+            // Handle Placeholder Options
+            if (intent === 'OPT_MY_ACTIVE' || intent === 'OPT_REPORT_ISSUE' || intent === 'OPT_REGISTER_ME' || intent === 'OPT_SUPPORT') {
+                const featureName = (intent === 'OPT_MY_ACTIVE') ? 'Active Transactions' : (intent === 'OPT_REPORT_ISSUE' ? 'Issue Reporting' : (intent === 'OPT_REGISTER_ME' ? 'Provider Registration' : 'Support'));
+                
+                // Send placeholder text message (using AI response)
+                const placeholderText = await generateAIResponse(`That's a vital feature, but ${featureName} is still being perfected! I'll let you know when it's ready.`, user.preferred_persona);
+                await sendTextMessage(senderId, placeholderText);
+                
+                // Keep the flow at MAIN_MENU and send the menu again
+                await sendMainMenu(senderId, user, senderName, false);
+                return;
+            }
+        }
         
-        await sendTextMessage(senderId, "I'm not sure how to handle that right now! Let's get you to the main menu.");
-        await sendMainMenu(senderId, user, senderName, false);
-        
+        // -----------------------------------------------------------
+        // 3. FALLBACK / UNKNOWN INPUT
+        // -----------------------------------------------------------
+        if (!isButtonOrCommand) {
+            // For now, any unknown input that isn't a button click should revert to the menu for clarity
+             const fallbackPrompt = await generateAIResponse("I'm not sure how to handle that right now. Let's stick to the options for a moment.", user.preferred_persona);
+            await sendTextMessage(senderId, fallbackPrompt);
+            
+            user.current_flow = 'MAIN_MENU';
+            await saveUser(user);
+            await sendMainMenu(senderId, user, senderName, false);
+            return;
+        }
+
 
     } catch (error) {
         console.error("❌ Critical error in handleMessageFlow:", error.message);
@@ -440,5 +551,5 @@ app.post('/webhook', (req, res) => {
 // --- START SERVER ---
 app.listen(PORT, () => {
     console.log(`\nYourHelpa Server is listening on port ${PORT}`);
-    console.log("✅ Initial chat flow (NEW/GREETING -> MAIN_MENU) is active.");
+    console.log("✅ Initial chat flow (NEW -> MAIN_MENU -> Location Prompt) is fully functional.");
 });
